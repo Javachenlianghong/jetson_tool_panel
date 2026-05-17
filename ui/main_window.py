@@ -36,6 +36,9 @@ from ui.pages.display_page import build_display_page
 from ui.pages.health_page import build_health_page
 from ui.pages.help_page import build_help_page
 from ui.pages.logs_page import build_logs_page
+from ui.pages.environment_page import build_environment_page
+from ui.pages.network_page import build_network_page
+from ui.pages.peripheral_page import build_peripheral_page
 from ui.pages.process_page import build_process_page
 from ui.pages.proxy_page import build_proxy_page
 from ui.pages.runtime_page import build_runtime_page
@@ -137,6 +140,9 @@ class JetsonControlPanel(QMainWindow):
         self.pkill_pattern_edit = None
         self.log_tail_target_combo = None
         self.log_tail_lines_spin = None
+        self.network_windows_ip_edit = None
+        self.network_proxy_port_edit = None
+        self.video_device_edit = None
         self.log_edit = None
         self.stop_button = None
         self.command_buttons = []
@@ -191,6 +197,9 @@ class JetsonControlPanel(QMainWindow):
         self.page_stack.addWidget(build_runtime_page(self))
         self.page_stack.addWidget(build_process_page(self))
         self.page_stack.addWidget(build_logs_page(self))
+        self.page_stack.addWidget(build_network_page(self))
+        self.page_stack.addWidget(build_environment_page(self))
+        self.page_stack.addWidget(build_peripheral_page(self))
         self.page_stack.addWidget(build_health_page(self))
         self.page_stack.addWidget(build_display_page(self))
         self.page_stack.addWidget(build_help_page(self))
@@ -247,6 +256,9 @@ class JetsonControlPanel(QMainWindow):
             ("运行控制", style.standardIcon(QStyle.SP_MediaPlay)),
             ("进程管理", style.standardIcon(QStyle.SP_FileDialogDetailedView)),
             ("日志查看", style.standardIcon(QStyle.SP_FileIcon)),
+            ("网络诊断", style.standardIcon(QStyle.SP_DriveNetIcon)),
+            ("环境检查", style.standardIcon(QStyle.SP_DialogApplyButton)),
+            ("外设检测", style.standardIcon(QStyle.SP_DriveHDIcon)),
             ("设备状态", style.standardIcon(QStyle.SP_ComputerIcon)),
             ("显示设置", style.standardIcon(QStyle.SP_ComputerIcon)),
             ("命令参考", style.standardIcon(QStyle.SP_FileDialogInfoView)),
@@ -625,6 +637,7 @@ class JetsonControlPanel(QMainWindow):
         self.process_filter_edit.setText(str(self.settings.value("process/filter", "")))
         self._set_combo_text(self.log_tail_target_combo, self.settings.value("logs/target", self.log_tail_target_combo.currentText()))
         self.log_tail_lines_spin.setValue(self._setting_int("logs/lines", 120))
+        self.video_device_edit.setText(str(self.settings.value("peripheral/video_device", "/dev/video0")))
         self._switch_page(self._setting_int("window/current_page", 0))
 
     def _save_settings(self):
@@ -657,6 +670,7 @@ class JetsonControlPanel(QMainWindow):
         self.settings.setValue("process/filter", self.process_filter_edit.text().strip())
         self.settings.setValue("logs/target", self.log_tail_target_combo.currentText().strip())
         self.settings.setValue("logs/lines", self.log_tail_lines_spin.value())
+        self.settings.setValue("peripheral/video_device", self.video_device_edit.text().strip())
         self.settings.sync()
 
     def _sync_default_cidr(self, ip_address):
@@ -904,6 +918,24 @@ class JetsonControlPanel(QMainWindow):
                 self.log_tail_target_combo.currentText(),
                 self.log_tail_lines_spin.value(),
             ),
+        )
+
+    def run_network_diagnostics(self):
+        self._run_jetson_command(
+            "网络连通性诊断",
+            remote_ops_service.network_diagnostics_command(
+                self.network_windows_ip_edit.text(),
+                self.network_proxy_port_edit.text(),
+            ),
+        )
+
+    def run_environment_check(self):
+        self._run_jetson_command("开发环境检查", remote_ops_service.environment_check_command())
+
+    def run_peripheral_check(self):
+        self._run_jetson_command(
+            "外设检测",
+            remote_ops_service.peripheral_check_command(self.video_device_edit.text()),
         )
 
     def query_jetson_displays(self):
