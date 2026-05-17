@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.log
+settings.ini
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+build/
+dist/
+*.spec
