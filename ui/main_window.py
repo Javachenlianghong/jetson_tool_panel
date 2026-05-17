@@ -10,7 +10,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PyQt5.QtCore import QSettings, Qt
+from PyQt5.QtCore import QSettings, QTimer, Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QApplication,
@@ -31,8 +31,9 @@ from PyQt5.QtWidgets import (
 from core.command_runner import CommandWorker, format_command
 from core.paths import DEFAULTS, PATHS
 from core.settings import settings_bool
-from services import display_service, proxy_service, ssh_service
+from services import device_health_service, display_service, proxy_service, ssh_service
 from ui.pages.display_page import build_display_page
+from ui.pages.health_page import build_health_page
 from ui.pages.help_page import build_help_page
 from ui.pages.proxy_page import build_proxy_page
 from ui.pages.transfer_page import build_transfer_page
@@ -121,14 +122,21 @@ class JetsonControlPanel(QMainWindow):
         self.display_env_edit = None
         self.xauthority_edit = None
         self.framebuffer_fallback_check = None
+        self.health_labels = {}
+        self.health_refresh_button = None
+        self.health_auto_check = None
+        self.health_interval_combo = None
         self.log_edit = None
         self.stop_button = None
         self.command_buttons = []
         self.nav_buttons = []
         self.page_stack = None
         self.current_command_title = None
+        self.current_command_output = []
         self.status_labels = {}
         self.status_dots = {}
+        self.health_timer = QTimer(self)
+        self.health_timer.timeout.connect(self.refresh_device_health)
 
         self.setWindowTitle("Jetson 工具面板")
         self.resize(1080, 760)
@@ -157,7 +165,7 @@ class JetsonControlPanel(QMainWindow):
         header_text.setSpacing(2)
         title = QLabel("Jetson 工具面板")
         title.setObjectName("Title")
-        subtitle = QLabel("Windows Clash 代理、Jetson SSH、项目同步与显示设置。")
+        subtitle = QLabel("Windows Clash 代理、SSH 项目同步、显示设置与设备监控。")
         subtitle.setObjectName("Subtitle")
         header_text.addWidget(title)
         header_text.addWidget(subtitle)
@@ -169,6 +177,7 @@ class JetsonControlPanel(QMainWindow):
         self.page_stack.setObjectName("PageStack")
         self.page_stack.addWidget(build_proxy_page(self))
         self.page_stack.addWidget(build_transfer_page(self))
+        self.page_stack.addWidget(build_health_page(self))
         self.page_stack.addWidget(build_display_page(self))
         self.page_stack.addWidget(build_help_page(self))
         main_layout.addWidget(self.page_stack, 1)
@@ -221,6 +230,7 @@ class JetsonControlPanel(QMainWindow):
         nav_specs = [
             ("代理", style.standardIcon(QStyle.SP_DriveNetIcon)),
             ("项目传输", style.standardIcon(QStyle.SP_DirIcon)),
+            ("设备状态", style.standardIcon(QStyle.SP_ComputerIcon)),
             ("显示设置", style.standardIcon(QStyle.SP_ComputerIcon)),
             ("命令参考", style.standardIcon(QStyle.SP_FileDialogInfoView)),
         ]
@@ -392,10 +402,20 @@ class JetsonControlPanel(QMainWindow):
                 color: #667085;
                 font-size: 12px;
             }
+            QLabel#MetricValue {
+                color: #172033;
+                font-size: 13px;
+                font-weight: 700;
+            }
             QFrame#Panel {
                 background: #ffffff;
                 border: 1px solid #dde3ec;
                 border-radius: 8px;
+            }
+            QWidget#MetricBox {
+                background: #fbfcfe;
+                border: 1px solid #e3e9f2;
+                border-radius: 6px;
             }
             QFrame#StatusCard {
                 background: #ffffff;
@@ -580,6 +600,8 @@ class JetsonControlPanel(QMainWindow):
         self.framebuffer_fallback_check.setChecked(
             settings_bool(self.settings.value("display/framebuffer_fallback"), True)
         )
+        self._set_combo_text(self.health_interval_combo, self.settings.value("health/interval", "5 秒"))
+        self.health_auto_check.setChecked(settings_bool(self.settings.value("health/auto_refresh"), False))
         self._switch_page(self._setting_int("window/current_page", 0))
 
     def _save_settings(self):
@@ -604,6 +626,8 @@ class JetsonControlPanel(QMainWindow):
         self.settings.setValue("display/display_env", self.display_env_edit.text().strip())
         self.settings.setValue("display/xauthority", self.xauthority_edit.text().strip())
         self.settings.setValue("display/framebuffer_fallback", self.framebuffer_fallback_check.isChecked())
+        self.settings.setValue("health/auto_refresh", self.health_auto_check.isChecked())
+        self.settings.setValue("health/interval", self.health_interval_combo.currentText().strip())
         self.settings.sync()
 
     def _sync_default_cidr(self, ip_address):
@@ -636,12 +660,17 @@ class JetsonControlPanel(QMainWindow):
         self._append_log("+ " + format_command(command))
         self._set_running(True)
         self.current_command_title = title
+        self.current_command_output = []
 
         self.worker = CommandWorker(command, cwd=cwd, parent=self)
-        self.worker.output.connect(self._append_log)
+        self.worker.output.connect(self._handle_command_output)
         self.worker.failed_to_start.connect(self._command_failed_to_start)
         self.worker.finished_ok.connect(self._command_finished)
         self.worker.start()
+
+    def _handle_command_output(self, line):
+        self.current_command_output.append(line)
+        self._append_log(line)
 
     def _command_failed_to_start(self, error):
         self._append_log("无法启动命令: " + error)
@@ -671,6 +700,9 @@ class JetsonControlPanel(QMainWindow):
             self._update_status("display", "已设置", self.resolution_combo.currentText().strip())
         elif title == "恢复 Jetson 显示自动模式":
             self._update_status("display", "已设置", "自动模式")
+        elif title == "刷新设备状态":
+            data = device_health_service.parse_health_output(self.current_command_output)
+            self._update_health_page(data)
 
     def stop_current_command(self):
         if self.worker and self.worker.isRunning():
@@ -752,6 +784,39 @@ class JetsonControlPanel(QMainWindow):
             ssh_service.remote_ssh_command(remote, remote_command),
             cwd=self.paths.app_dir,
         )
+
+    def refresh_device_health(self):
+        if self.worker and self.worker.isRunning():
+            return
+        remote = self._remote_or_warn()
+        if not remote:
+            return
+        command = ssh_service.remote_ssh_command(remote, device_health_service.health_command())
+        self._run_command("刷新设备状态", command, cwd=self.paths.app_dir)
+
+    def _toggle_health_auto_refresh(self, checked):
+        if checked:
+            self.health_timer.start(self._health_interval_ms())
+        else:
+            self.health_timer.stop()
+        self._save_settings()
+
+    def _health_interval_changed(self, _text):
+        if self.health_timer.isActive():
+            self.health_timer.start(self._health_interval_ms())
+        self._save_settings()
+
+    def _health_interval_ms(self):
+        text = self.health_interval_combo.currentText() if self.health_interval_combo else "5 秒"
+        try:
+            seconds = int(str(text).split()[0])
+        except (TypeError, ValueError, IndexError):
+            seconds = 5
+        return max(seconds, 1) * 1000
+
+    def _update_health_page(self, data):
+        for key, label in self.health_labels.items():
+            label.setText(data.get(key) or "未知")
 
     def query_jetson_displays(self):
         command = display_service.query_display_command(
