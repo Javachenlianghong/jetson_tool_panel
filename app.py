@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Compatibility entry point for existing launch scripts."""
+"""Application entry point for Jetson Tool Panel."""
 
-from app import main
+from ui.main_window import main
 
 
 if __name__ == "__main__":
