@@ -31,11 +31,14 @@ from PyQt5.QtWidgets import (
 from core.command_runner import CommandWorker, format_command
 from core.paths import DEFAULTS, PATHS
 from core.settings import settings_bool
-from services import device_health_service, display_service, proxy_service, ssh_service
+from services import device_health_service, display_service, proxy_service, remote_ops_service, ssh_service
 from ui.pages.display_page import build_display_page
 from ui.pages.health_page import build_health_page
 from ui.pages.help_page import build_help_page
+from ui.pages.logs_page import build_logs_page
+from ui.pages.process_page import build_process_page
 from ui.pages.proxy_page import build_proxy_page
+from ui.pages.runtime_page import build_runtime_page
 from ui.pages.transfer_page import build_transfer_page
 
 
@@ -126,6 +129,14 @@ class JetsonControlPanel(QMainWindow):
         self.health_refresh_button = None
         self.health_auto_check = None
         self.health_interval_combo = None
+        self.run_workdir_edit = None
+        self.run_command_edit = None
+        self.run_background_check = None
+        self.process_filter_edit = None
+        self.kill_pid_edit = None
+        self.pkill_pattern_edit = None
+        self.log_tail_target_combo = None
+        self.log_tail_lines_spin = None
         self.log_edit = None
         self.stop_button = None
         self.command_buttons = []
@@ -177,6 +188,9 @@ class JetsonControlPanel(QMainWindow):
         self.page_stack.setObjectName("PageStack")
         self.page_stack.addWidget(build_proxy_page(self))
         self.page_stack.addWidget(build_transfer_page(self))
+        self.page_stack.addWidget(build_runtime_page(self))
+        self.page_stack.addWidget(build_process_page(self))
+        self.page_stack.addWidget(build_logs_page(self))
         self.page_stack.addWidget(build_health_page(self))
         self.page_stack.addWidget(build_display_page(self))
         self.page_stack.addWidget(build_help_page(self))
@@ -230,6 +244,9 @@ class JetsonControlPanel(QMainWindow):
         nav_specs = [
             ("代理", style.standardIcon(QStyle.SP_DriveNetIcon)),
             ("项目传输", style.standardIcon(QStyle.SP_DirIcon)),
+            ("运行控制", style.standardIcon(QStyle.SP_MediaPlay)),
+            ("进程管理", style.standardIcon(QStyle.SP_FileDialogDetailedView)),
+            ("日志查看", style.standardIcon(QStyle.SP_FileIcon)),
             ("设备状态", style.standardIcon(QStyle.SP_ComputerIcon)),
             ("显示设置", style.standardIcon(QStyle.SP_ComputerIcon)),
             ("命令参考", style.standardIcon(QStyle.SP_FileDialogInfoView)),
@@ -602,6 +619,12 @@ class JetsonControlPanel(QMainWindow):
         )
         self._set_combo_text(self.health_interval_combo, self.settings.value("health/interval", "5 秒"))
         self.health_auto_check.setChecked(settings_bool(self.settings.value("health/auto_refresh"), False))
+        self.run_command_edit.setText(str(self.settings.value("runtime/command", self.run_command_edit.text())))
+        self.run_workdir_edit.setText(str(self.settings.value("runtime/workdir", self.run_workdir_edit.text())))
+        self.run_background_check.setChecked(settings_bool(self.settings.value("runtime/background"), False))
+        self.process_filter_edit.setText(str(self.settings.value("process/filter", "")))
+        self._set_combo_text(self.log_tail_target_combo, self.settings.value("logs/target", self.log_tail_target_combo.currentText()))
+        self.log_tail_lines_spin.setValue(self._setting_int("logs/lines", 120))
         self._switch_page(self._setting_int("window/current_page", 0))
 
     def _save_settings(self):
@@ -628,6 +651,12 @@ class JetsonControlPanel(QMainWindow):
         self.settings.setValue("display/framebuffer_fallback", self.framebuffer_fallback_check.isChecked())
         self.settings.setValue("health/auto_refresh", self.health_auto_check.isChecked())
         self.settings.setValue("health/interval", self.health_interval_combo.currentText().strip())
+        self.settings.setValue("runtime/command", self.run_command_edit.text().strip())
+        self.settings.setValue("runtime/workdir", self.run_workdir_edit.text().strip())
+        self.settings.setValue("runtime/background", self.run_background_check.isChecked())
+        self.settings.setValue("process/filter", self.process_filter_edit.text().strip())
+        self.settings.setValue("logs/target", self.log_tail_target_combo.currentText().strip())
+        self.settings.setValue("logs/lines", self.log_tail_lines_spin.value())
         self.settings.sync()
 
     def _sync_default_cidr(self, ip_address):
@@ -817,6 +846,65 @@ class JetsonControlPanel(QMainWindow):
     def _update_health_page(self, data):
         for key, label in self.health_labels.items():
             label.setText(data.get(key) or "未知")
+
+    def run_remote_program(self):
+        command = self.run_command_edit.text().strip()
+        if not command:
+            QMessageBox.warning(self, "缺少启动命令", "请填写要在远端执行的命令。")
+            return
+        remote_script = remote_ops_service.run_program_command(
+            self.run_workdir_edit.text().strip(),
+            command,
+            self.run_background_check.isChecked(),
+        )
+        self._run_jetson_command("运行远程程序", remote_script)
+
+    def list_remote_processes(self):
+        self._run_jetson_command(
+            "刷新远程进程",
+            remote_ops_service.process_list_command(self.process_filter_edit.text()),
+        )
+
+    def kill_remote_pid(self):
+        pid = self.kill_pid_edit.text().strip()
+        if not pid:
+            QMessageBox.warning(self, "缺少 PID", "请填写要结束的远程进程 PID。")
+            return
+        answer = QMessageBox.question(
+            self,
+            "确认结束进程",
+            "确定向远端 PID {} 发送 TERM 信号？".format(pid),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self._run_jetson_command("结束远程进程", remote_ops_service.kill_pid_command(pid))
+
+    def pkill_remote_pattern(self):
+        pattern = self.pkill_pattern_edit.text().strip()
+        if not pattern:
+            QMessageBox.warning(self, "缺少关键字", "请填写要匹配的远程进程关键字。")
+            return
+        answer = QMessageBox.question(
+            self,
+            "确认按关键字结束进程",
+            "确定结束远端命令行匹配“{}”的进程？".format(pattern),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self._run_jetson_command("按关键字结束远程进程", remote_ops_service.pkill_pattern_command(pattern))
+
+    def tail_remote_log(self):
+        self._run_jetson_command(
+            "实时查看远程日志",
+            remote_ops_service.tail_log_command(
+                self.log_tail_target_combo.currentText(),
+                self.log_tail_lines_spin.value(),
+            ),
+        )
 
     def query_jetson_displays(self):
         command = display_service.query_display_command(
