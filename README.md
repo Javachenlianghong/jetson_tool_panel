@@ -78,9 +78,17 @@ jetson_tool_panel/
 
 ```text
 settings.ini
+config/projects.json
+config/task_history.json
 ```
 
-它保存窗口大小、Windows IP、代理端口、SSH 地址、远程路径、分辨率、设备档案、运行命令、日志目标、模型路径、设备状态自动刷新设置等常用配置。该文件只属于本机环境，已经被 `.gitignore` 忽略。
+`settings.ini` 保存窗口大小和少量 UI 状态；`config/projects.json` 保存设备、项目、命令、日志和模型配置；`config/task_history.json` 保存最近任务历史。这些文件只属于本机环境，已经被 `.gitignore` 忽略。
+
+仓库提交了一个可参考模板：
+
+```text
+config/projects.example.json
+```
 
 上一级目录里默认放被管理的 YOLO/TensorRT 项目：
 
@@ -167,6 +175,7 @@ source ./jetson-proxy-session.sh 192.168.1.11 7897
 
 ## 开发调试
 
+- `工作台`：按当前设备和项目执行同步、构建、运行、停止、日志和诊断报告。
 - `运行控制`：在远端目录执行任意命令；后台运行时输出写入 `run-control.log`。
 - `进程管理`：通过 `ps` 查看远程进程，支持 PID 结束和 `pkill -f` 关键字结束。
 - `日志查看`：支持普通文件 `tail -F`、`journal:`、`journal:服务名` 和 `dmesg`。
@@ -178,8 +187,9 @@ source ./jetson-proxy-session.sh 192.168.1.11 7897
 
 - `文件管理`：通过 SSH/SCP 列出远程路径、创建目录、删除路径、上传/下载单文件。
 - `服务管理`：查看 systemd 状态，启动、停止、重启服务，实时查看服务日志。
-- `模型部署`：Jetson 可调用 `trtexec` 转换 TensorRT engine；RK3588 页面输出 RKNN 部署命令模板。
-- `设备档案`：保存多个设备的名称、SSH 地址、本地项目路径和远端项目路径，方便在 Jetson、RK3588 之间切换。
+- `模型部署`：每个项目可保存多个模型配置；Jetson 可调用 `trtexec` 转换 TensorRT engine；RK3588 页面输出 RKNN 部署命令模板。
+- `项目配置`：保存当前项目的本地路径、远端路径、构建命令、运行命令、停止关键字和日志目标。
+- `设备档案`：保存多个设备的名称、SSH 地址和代理配置，方便在 Jetson、RK3588 之间切换。
 - `诊断报告`：汇总设备状态、网络、环境和外设检查输出，保存到本机 `reports/` 目录。
 
 ## 设备状态
@@ -262,3 +272,13 @@ sudo apt install x11-xserver-utils
 - 多项目配置，每个项目保存自己的路径、启动命令、日志路径和模型参数。
 - 设备初始化向导：apt/pip 源、时区、NTP、常用依赖安装检查。
 - 模型部署向导：ONNX/TensorRT/RKNN 文件管理、benchmark、推理参数保存。
+
+## 开发验证
+
+常用检查命令：
+
+```powershell
+py -3 -m py_compile .\app.py .\jetson_gui.py .\ui\main_window.py
+py -3 -m compileall .\core .\services .\ui
+py -3 -m unittest discover -s tests
+```

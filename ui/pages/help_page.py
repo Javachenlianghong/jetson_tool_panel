@@ -46,7 +46,11 @@ def build_help_page(window):
         "   trtexec --onnx=model.onnx --saveEngine=model.engine --fp16\n\n"
         "15. RK3588 RKNPU 检测\n"
         "   ls -l /dev/rknpu*\n"
-        "   dmesg | grep -i rknpu\n"
+        "   dmesg | grep -i rknpu\n\n"
+        "16. 项目级配置文件\n"
+        "   config/projects.json\n\n"
+        "17. 一键工作流建议\n"
+        "   同步 -> 构建 -> 后台运行 -> 查看日志\n"
     )
     text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
     ref_layout = QVBoxLayout()
