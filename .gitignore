@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 *.log
 settings.ini
+reports/
 .pytest_cache/
 .mypy_cache/
 .venv/
