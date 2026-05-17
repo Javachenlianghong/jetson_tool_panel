@@ -1,109 +1,41 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-PyQt5 control panel for the local Jetson helper scripts.
+"""Main window for Jetson Tool Panel."""
 
-This GUI is intended to run on Windows. It wraps the existing PowerShell,
-SCP, SSH, and sync commands without changing the original scripts.
-"""
-
-import os
 import base64
+import os
 import socket
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
 
-from PyQt5.QtCore import QSettings, QThread, Qt, pyqtSignal
+from PyQt5.QtCore import QSettings, Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QApplication,
-    QCheckBox,
-    QComboBox,
     QFileDialog,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
-    QSizePolicy,
     QStackedWidget,
-    QSpinBox,
     QStyle,
     QVBoxLayout,
     QWidget,
 )
 
-from ui.pages.common import build_note, build_panel
+from core.command_runner import CommandWorker, format_command
+from core.paths import DEFAULTS, PATHS
+from core.settings import settings_bool
+from services import display_service, proxy_service, ssh_service
 from ui.pages.display_page import build_display_page
 from ui.pages.help_page import build_help_page
 from ui.pages.proxy_page import build_proxy_page
 from ui.pages.transfer_page import build_transfer_page
-
-
-IS_FROZEN = getattr(sys, "frozen", False)
-BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-TOOL_DIR = Path(sys.executable).resolve().parent if IS_FROZEN else Path(__file__).resolve().parent.parent
-
-
-def first_existing_path(*paths):
-    for path in paths:
-        if path.exists():
-            return path
-    return paths[0]
-
-
-def find_workspace_root():
-    if not IS_FROZEN:
-        return TOOL_DIR.parent
-
-    candidates = [
-        Path.cwd(),
-        TOOL_DIR,
-        TOOL_DIR.parent,
-        TOOL_DIR.parent.parent,
-    ]
-    for candidate in candidates:
-        if (candidate / "YoloV8-TensorRT-Jetson_Nano").exists():
-            return candidate
-    return TOOL_DIR
-
-
-APP_DIR = find_workspace_root()
-SCRIPT_DIR = first_existing_path(
-    TOOL_DIR / "scripts",
-    BUNDLE_DIR / "scripts",
-    APP_DIR / "jetson_tool_panel" / "scripts",
-)
-CONFIG_PATH = TOOL_DIR / "settings.ini"
-
-
-WINDOWS_PROXY_SCRIPT = first_existing_path(
-    SCRIPT_DIR / "windows-clash-lan-temp.ps1",
-    BUNDLE_DIR / "scripts" / "windows-clash-lan-temp.ps1",
-    APP_DIR / "windows-clash-lan-temp.ps1",
-)
-JETSON_PROXY_SCRIPT = first_existing_path(
-    SCRIPT_DIR / "jetson-proxy-session.sh",
-    BUNDLE_DIR / "scripts" / "jetson-proxy-session.sh",
-    APP_DIR / "jetson-proxy-session.sh",
-)
-PROJECT_DIR = first_existing_path(
-    APP_DIR / "YoloV8-TensorRT-Jetson_Nano",
-    TOOL_DIR / "YoloV8-TensorRT-Jetson_Nano",
-)
-SYNC_SCRIPT = PROJECT_DIR / "sync-to-jetson.py"
-
-DEFAULT_PROXY_PORT = 7897
-DEFAULT_REMOTE = "jetson@192.168.55.1"
-DEFAULT_REMOTE_PATH = "/home/jetson/YoloV8-TensorRT-Jetson_Nano"
-DEFAULT_CLASH_PROGRAM = r"C:\Program Files\Clash Verge\verge-mihomo.exe"
 
 
 def local_ipv4_candidates():
@@ -165,75 +97,14 @@ def default_remote_cidr(ip_address):
     return "192.168.1.0/24"
 
 
-def quote_for_powershell(value):
-    return "'" + value.replace("'", "''") + "'"
-
-
-def quote_for_bash(value):
-    return "'" + value.replace("'", "'\"'\"'") + "'"
-
-
-def format_command(command):
-    if os.name == "nt":
-        return subprocess.list2cmdline(command)
-    return " ".join(quote_for_bash(part) for part in command)
-
-
-def settings_bool(value, default=False):
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in ("1", "true", "yes", "on")
-
-
-class CommandWorker(QThread):
-    output = pyqtSignal(str)
-    finished_ok = pyqtSignal(int)
-    failed_to_start = pyqtSignal(str)
-
-    def __init__(self, command, cwd=None, parent=None):
-        super().__init__(parent)
-        self.command = command
-        self.cwd = str(cwd) if cwd else None
-        self._process = None
-
-    def run(self):
-        creationflags = 0
-        if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
-            creationflags = subprocess.CREATE_NO_WINDOW
-
-        try:
-            self._process = subprocess.Popen(
-                self.command,
-                cwd=self.cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                bufsize=1,
-                creationflags=creationflags,
-            )
-        except Exception as exc:
-            self.failed_to_start.emit(str(exc))
-            return
-
-        assert self._process.stdout is not None
-        for line in self._process.stdout:
-            self.output.emit(line.rstrip("\r\n"))
-
-        return_code = self._process.wait()
-        self.finished_ok.emit(return_code)
-
-    def terminate_process(self):
-        if self._process and self._process.poll() is None:
-            self._process.terminate()
-
-
 class JetsonControlPanel(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.settings = QSettings(str(CONFIG_PATH), QSettings.IniFormat)
+        self.settings = QSettings(str(PATHS.config_path), QSettings.IniFormat)
         self.worker = None
+        self.defaults = DEFAULTS
+        self.paths = PATHS
+
         self.ip_combo = None
         self.port_spin = None
         self.remote_address_edit = None
@@ -258,13 +129,6 @@ class JetsonControlPanel(QMainWindow):
         self.current_command_title = None
         self.status_labels = {}
         self.status_dots = {}
-        self.defaults = SimpleNamespace(
-            proxy_port=DEFAULT_PROXY_PORT,
-            remote=DEFAULT_REMOTE,
-            remote_path=DEFAULT_REMOTE_PATH,
-            clash_program=DEFAULT_CLASH_PROGRAM,
-        )
-        self.paths = SimpleNamespace(app_dir=APP_DIR)
 
         self.setWindowTitle("Jetson 工具面板")
         self.resize(1080, 760)
@@ -303,10 +167,10 @@ class JetsonControlPanel(QMainWindow):
 
         self.page_stack = QStackedWidget()
         self.page_stack.setObjectName("PageStack")
-        self.page_stack.addWidget(self._build_proxy_tab())
-        self.page_stack.addWidget(self._build_transfer_tab())
-        self.page_stack.addWidget(self._build_resolution_tab())
-        self.page_stack.addWidget(self._build_help_tab())
+        self.page_stack.addWidget(build_proxy_page(self))
+        self.page_stack.addWidget(build_transfer_page(self))
+        self.page_stack.addWidget(build_display_page(self))
+        self.page_stack.addWidget(build_help_page(self))
         main_layout.addWidget(self.page_stack, 1)
 
         log_header = QHBoxLayout()
@@ -477,376 +341,6 @@ class JetsonControlPanel(QMainWindow):
         secondary.toggled.connect(
             lambda checked: primary.setChecked(checked) if primary.isChecked() != checked else None
         )
-
-    def _build_proxy_tab(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-
-        proxy_grid = QGridLayout()
-        proxy_grid.setHorizontalSpacing(10)
-        proxy_grid.setVerticalSpacing(10)
-
-        self.ip_combo = QComboBox()
-        self.ip_combo.setEditable(True)
-        self.ip_combo.currentTextChanged.connect(self._sync_default_cidr)
-
-        refresh_ip_button = QPushButton("刷新 IP")
-        refresh_ip_button.clicked.connect(self.refresh_ips)
-
-        self.port_spin = QSpinBox()
-        self.port_spin.setRange(1, 65535)
-        self.port_spin.setValue(DEFAULT_PROXY_PORT)
-
-        self.remote_address_edit = QLineEdit("192.168.1.0/24")
-        self.clash_program_edit = QLineEdit(DEFAULT_CLASH_PROGRAM)
-
-        browse_button = QPushButton("浏览")
-        browse_button.clicked.connect(self.choose_clash_program)
-
-        proxy_grid.addWidget(QLabel("Windows IP"), 0, 0)
-        proxy_grid.addWidget(self.ip_combo, 0, 1)
-        proxy_grid.addWidget(QLabel("端口"), 0, 2)
-        proxy_grid.addWidget(self.port_spin, 0, 3)
-        proxy_grid.addWidget(refresh_ip_button, 0, 4)
-        proxy_grid.addWidget(QLabel("允许访问网段"), 1, 0)
-        proxy_grid.addWidget(self.remote_address_edit, 1, 1, 1, 4)
-        proxy_grid.addWidget(QLabel("Clash Verge 程序"), 2, 0)
-        proxy_grid.addWidget(self.clash_program_edit, 2, 1, 1, 3)
-        proxy_grid.addWidget(browse_button, 2, 4)
-        proxy_grid.setColumnStretch(1, 1)
-        proxy_grid.setColumnStretch(3, 1)
-
-        proxy_buttons = QHBoxLayout()
-        enable_button = QPushButton("管理员窗口启用")
-        enable_button.setObjectName("PrimaryButton")
-        enable_button.clicked.connect(self.enable_firewall_rule_elevated)
-        direct_enable_button = QPushButton("直接启用")
-        direct_enable_button.clicked.connect(self.enable_firewall_rule)
-        stop_rule_button = QPushButton("关闭防火墙规则")
-        stop_rule_button.clicked.connect(self.remove_firewall_rule)
-        copy_button = QPushButton("复制 Jetson 代理命令")
-        copy_button.clicked.connect(self.copy_proxy_command)
-
-        for button in (enable_button, direct_enable_button, stop_rule_button, copy_button):
-            self.command_buttons.append(button)
-            proxy_buttons.addWidget(button)
-        proxy_buttons.addStretch(1)
-        proxy_grid.addLayout(proxy_buttons, 3, 0, 1, 5)
-
-        layout.addWidget(self._build_panel("代理配置（Windows Clash）", proxy_grid))
-
-        ssh_grid = QGridLayout()
-        ssh_grid.setHorizontalSpacing(10)
-        ssh_grid.setVerticalSpacing(10)
-
-        self.remote_edit = QLineEdit(DEFAULT_REMOTE)
-        ssh_browse_button = QPushButton("...")
-        ssh_browse_button.setEnabled(False)
-        ssh_browse_button.setToolTip("SSH 地址直接在输入框中编辑")
-
-        ssh_grid.addWidget(QLabel("SSH 地址"), 0, 0)
-        ssh_grid.addWidget(self.remote_edit, 0, 1)
-        ssh_grid.addWidget(ssh_browse_button, 0, 2)
-        ssh_grid.setColumnStretch(1, 1)
-
-        ssh_buttons = QHBoxLayout()
-        ssh_button = QPushButton("测试 SSH")
-        ssh_button.setObjectName("PrimaryButton")
-        ssh_button.clicked.connect(self.test_ssh)
-        setup_key_button = QPushButton("配置 SSH Key")
-        setup_key_button.clicked.connect(self.configure_ssh_key)
-        upload_proxy_button = QPushButton("上传代理脚本")
-        upload_proxy_button.clicked.connect(self.upload_proxy_script)
-        for button in (ssh_button, setup_key_button, upload_proxy_button):
-            self.command_buttons.append(button)
-            ssh_buttons.addWidget(button)
-        ssh_buttons.addStretch(1)
-        ssh_grid.addLayout(ssh_buttons, 1, 0, 1, 3)
-
-        layout.addWidget(self._build_panel("Jetson SSH", ssh_grid))
-
-        sync_grid = QGridLayout()
-        sync_grid.setHorizontalSpacing(10)
-        sync_grid.setVerticalSpacing(10)
-
-        self.remote_path_edit = QLineEdit(DEFAULT_REMOTE_PATH)
-        self.local_root_edit = QLineEdit(str(APP_DIR))
-
-        choose_local_button = QPushButton("浏览")
-        choose_local_button.clicked.connect(self.choose_local_root)
-
-        sync_grid.addWidget(QLabel("本地项目根目录"), 0, 0)
-        sync_grid.addWidget(self.local_root_edit, 0, 1)
-        sync_grid.addWidget(choose_local_button, 0, 2)
-        sync_grid.addWidget(QLabel("Jetson 项目路径"), 1, 0)
-        sync_grid.addWidget(self.remote_path_edit, 1, 1, 1, 2)
-
-        option_layout = QHBoxLayout()
-        self.full_sync_check = QCheckBox("完整同步")
-        self.dry_run_check = QCheckBox("只预览")
-        self.no_delete_check = QCheckBox("不删除远端文件")
-        option_layout.addWidget(self.full_sync_check)
-        option_layout.addWidget(self.dry_run_check)
-        option_layout.addWidget(self.no_delete_check)
-        option_layout.addStretch(1)
-        sync_grid.addLayout(option_layout, 2, 0, 1, 3)
-
-        sync_buttons = QHBoxLayout()
-        sync_button = QPushButton("同步到 Jetson")
-        sync_button.setObjectName("PrimaryButton")
-        sync_button.clicked.connect(self.sync_to_jetson)
-        pull_button = QPushButton("从 Jetson 拉取项目")
-        pull_button.clicked.connect(self.pull_from_jetson)
-        init_button = QPushButton("初始化同步状态")
-        init_button.clicked.connect(self.init_sync_state)
-        for button in (sync_button, pull_button, init_button):
-            self.command_buttons.append(button)
-            sync_buttons.addWidget(button)
-        sync_buttons.addStretch(1)
-        sync_grid.addLayout(sync_buttons, 3, 0, 1, 3)
-        sync_grid.setColumnStretch(1, 1)
-
-        layout.addWidget(self._build_panel("项目同步", sync_grid))
-        layout.addWidget(self._build_note("常用配置会自动保存；防火墙脚本需要管理员权限，建议优先使用“管理员窗口启用”。"))
-        layout.addStretch(1)
-        return page
-
-    def _build_transfer_tab(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-
-        settings_grid = QGridLayout()
-        settings_grid.setHorizontalSpacing(10)
-        settings_grid.setVerticalSpacing(10)
-
-        transfer_remote_edit = QLineEdit(self.remote_edit.text())
-        transfer_remote_path_edit = QLineEdit(self.remote_path_edit.text())
-        transfer_local_root_edit = QLineEdit(self.local_root_edit.text())
-        self._bind_line_edits(self.remote_edit, transfer_remote_edit)
-        self._bind_line_edits(self.remote_path_edit, transfer_remote_path_edit)
-        self._bind_line_edits(self.local_root_edit, transfer_local_root_edit)
-
-        choose_local_button = QPushButton("浏览")
-        choose_local_button.clicked.connect(self.choose_local_root)
-
-        settings_grid.addWidget(QLabel("Jetson SSH"), 0, 0)
-        settings_grid.addWidget(transfer_remote_edit, 0, 1, 1, 2)
-        settings_grid.addWidget(QLabel("Jetson 项目路径"), 1, 0)
-        settings_grid.addWidget(transfer_remote_path_edit, 1, 1, 1, 2)
-        settings_grid.addWidget(QLabel("Windows 保存目录"), 2, 0)
-        settings_grid.addWidget(transfer_local_root_edit, 2, 1)
-        settings_grid.addWidget(choose_local_button, 2, 2)
-        settings_grid.setColumnStretch(1, 1)
-        layout.addWidget(self._build_panel("Jetson SSH 与项目路径", settings_grid))
-
-        option_layout = QHBoxLayout()
-        transfer_full_sync_check = QCheckBox("完整同步")
-        transfer_dry_run_check = QCheckBox("只预览")
-        transfer_no_delete_check = QCheckBox("不删除远端文件")
-        transfer_full_sync_check.setChecked(self.full_sync_check.isChecked())
-        transfer_dry_run_check.setChecked(self.dry_run_check.isChecked())
-        transfer_no_delete_check.setChecked(self.no_delete_check.isChecked())
-        self._bind_checkboxes(self.full_sync_check, transfer_full_sync_check)
-        self._bind_checkboxes(self.dry_run_check, transfer_dry_run_check)
-        self._bind_checkboxes(self.no_delete_check, transfer_no_delete_check)
-        option_layout.addWidget(transfer_full_sync_check)
-        option_layout.addWidget(transfer_dry_run_check)
-        option_layout.addWidget(transfer_no_delete_check)
-        option_layout.addStretch(1)
-        layout.addWidget(self._build_panel("同步选项", option_layout))
-
-        buttons_grid = QGridLayout()
-        buttons_grid.setHorizontalSpacing(10)
-        buttons_grid.setVerticalSpacing(10)
-
-        ssh_button = QPushButton("测试 SSH")
-        ssh_button.setObjectName("PrimaryButton")
-        ssh_button.clicked.connect(self.test_ssh)
-        setup_key_button = QPushButton("配置 SSH Key")
-        setup_key_button.clicked.connect(self.configure_ssh_key)
-        upload_proxy_button = QPushButton("上传代理脚本")
-        upload_proxy_button.clicked.connect(self.upload_proxy_script)
-        sync_button = QPushButton("同步到 Jetson")
-        sync_button.setObjectName("PrimaryButton")
-        sync_button.clicked.connect(self.sync_to_jetson)
-        pull_button = QPushButton("从 Jetson 拉取项目")
-        pull_button.clicked.connect(self.pull_from_jetson)
-        init_button = QPushButton("初始化同步状态")
-        init_button.clicked.connect(self.init_sync_state)
-
-        transfer_buttons = [
-            ssh_button,
-            setup_key_button,
-            upload_proxy_button,
-            sync_button,
-            pull_button,
-            init_button,
-        ]
-        for index, button in enumerate(transfer_buttons):
-            self.command_buttons.append(button)
-            buttons_grid.addWidget(button, index // 3, index % 3)
-        buttons_grid.setColumnStretch(0, 1)
-        buttons_grid.setColumnStretch(1, 1)
-        buttons_grid.setColumnStretch(2, 1)
-        layout.addWidget(self._build_panel("快速操作", buttons_grid))
-        layout.addWidget(self._build_note("此页配置会与“代理”工作台中的 Jetson SSH 和项目同步面板保持同步。"))
-        layout.addStretch(1)
-        return page
-
-    def _build_resolution_tab(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-
-        self.display_output_combo = QComboBox()
-        self.display_output_combo.setEditable(True)
-        self.display_output_combo.addItems(["auto", "HDMI-0", "HDMI-1", "DP-0", "DP-1", "eDP-1"])
-
-        self.resolution_combo = QComboBox()
-        self.resolution_combo.setEditable(True)
-        self.resolution_combo.addItems([
-            "1920x1080",
-            "1280x720",
-            "1366x768",
-            "1600x900",
-            "1024x768",
-            "800x600",
-            "2560x1440",
-            "3840x2160",
-        ])
-
-        self.refresh_rate_spin = QSpinBox()
-        self.refresh_rate_spin.setRange(0, 240)
-        self.refresh_rate_spin.setValue(60)
-        self.refresh_rate_spin.setSuffix(" Hz")
-        self.refresh_rate_spin.setSpecialValueText("自动")
-
-        self.display_env_edit = QLineEdit(":0")
-        self.xauthority_edit = QLineEdit("$HOME/.Xauthority")
-        self.framebuffer_fallback_check = QCheckBox("无 connected 显示器时设置 VNC/虚拟画布")
-        self.framebuffer_fallback_check.setChecked(True)
-
-        grid.addWidget(QLabel("使用 SSH"), 0, 0)
-        grid.addWidget(QLabel("项目传输页里的 Jetson SSH 地址"), 0, 1, 1, 2)
-        grid.addWidget(QLabel("显示输出口"), 1, 0)
-        grid.addWidget(self.display_output_combo, 1, 1, 1, 2)
-        grid.addWidget(QLabel("分辨率"), 2, 0)
-        grid.addWidget(self.resolution_combo, 2, 1, 1, 2)
-        grid.addWidget(QLabel("刷新率"), 3, 0)
-        grid.addWidget(self.refresh_rate_spin, 3, 1, 1, 2)
-        grid.addWidget(QLabel("DISPLAY"), 4, 0)
-        grid.addWidget(self.display_env_edit, 4, 1, 1, 2)
-        grid.addWidget(QLabel("XAUTHORITY"), 5, 0)
-        grid.addWidget(self.xauthority_edit, 5, 1, 1, 2)
-        grid.addWidget(QLabel("无头/VNC"), 6, 0)
-        grid.addWidget(self.framebuffer_fallback_check, 6, 1, 1, 2)
-        grid.setColumnStretch(1, 1)
-
-        buttons = QHBoxLayout()
-        query_button = QPushButton("查询显示器")
-        query_button.clicked.connect(self.query_jetson_displays)
-        set_button = QPushButton("设置分辨率")
-        set_button.clicked.connect(self.set_jetson_resolution)
-        auto_button = QPushButton("恢复自动")
-        auto_button.clicked.connect(self.auto_jetson_display)
-
-        for button in (query_button, set_button, auto_button):
-            self.command_buttons.append(button)
-            buttons.addWidget(button)
-        buttons.addStretch(1)
-
-        grid.addLayout(buttons, 7, 0, 1, 3)
-        layout.addWidget(self._build_panel("Jetson 显示分辨率", grid))
-        layout.addWidget(self._build_note(
-            "说明：此功能通过 SSH 在 Jetson 的当前图形会话里执行 xrandr。"
-            "设置通常只对当前桌面会话生效；如果 Jetson 没有启动桌面、使用 Wayland，"
-            "或没有安装 xrandr，命令会失败并在日志中显示原因。"
-        ))
-        layout.addStretch(1)
-        return page
-
-    def _build_help_tab(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-
-        text = QPlainTextEdit()
-        text.setObjectName("ReferenceText")
-        text.setReadOnly(True)
-        text.setPlainText(
-            "常用命令参考\n\n"
-            "1. Windows 开放 Clash 代理端口\n"
-            "   管理员 PowerShell:\n"
-            "   .\\windows-clash-lan-temp.ps1\n\n"
-            "2. Jetson 当前终端启用代理\n"
-            "   source ./jetson-proxy-session.sh <Windows_IP> 7897\n\n"
-            "3. Jetson 当前终端关闭代理\n"
-            "   proxyoff\n\n"
-            "4. 从 Windows 上传代理脚本到 Jetson\n"
-            "   scp -O .\\jetson-proxy-session.sh jetson@192.168.55.1:~/jetson-proxy-session.sh\n\n"
-            "5. 配置 SSH Key\n"
-            "   先生成 Windows 本机公钥，再输入 Jetson 密码写入 ~/.ssh/authorized_keys\n\n"
-            "6. 查询 Jetson 显示器\n"
-            "   DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority xrandr --query\n\n"
-            "7. 设置 Jetson 分辨率\n"
-            "   DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority xrandr --output HDMI-0 --mode 1920x1080 --rate 60\n\n"
-            "8. 从 Jetson 拉取项目到 Windows\n"
-            "   scp -O -r jetson@192.168.55.1:/home/jetson/YoloV8-TensorRT-Jetson_Nano .\n\n"
-            "9. 同步 Windows 项目改动到 Jetson\n"
-            "   py -3 .\\YoloV8-TensorRT-Jetson_Nano\\sync-to-jetson.py\n"
-        )
-        text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        ref_layout = QVBoxLayout()
-        ref_layout.addWidget(text)
-        layout.addWidget(self._build_panel("命令参考", ref_layout), 1)
-        return page
-
-    def _build_panel(self, title, content_layout):
-        panel = QFrame()
-        panel.setObjectName("Panel")
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(14, 12, 14, 14)
-        layout.setSpacing(10)
-
-        title_label = QLabel(title)
-        title_label.setObjectName("PanelTitle")
-        layout.addWidget(title_label)
-        layout.addLayout(content_layout)
-        return panel
-
-    def _build_note(self, content):
-        note = QLabel(content)
-        note.setWordWrap(True)
-        note.setObjectName("Note")
-        return note
-
-    def _build_proxy_tab(self):
-        return build_proxy_page(self)
-
-    def _build_transfer_tab(self):
-        return build_transfer_page(self)
-
-    def _build_resolution_tab(self):
-        return build_display_page(self)
-
-    def _build_help_tab(self):
-        return build_help_page(self)
-
-    def _build_panel(self, title, content_layout):
-        return build_panel(title, content_layout)
-
-    def _build_note(self, content):
-        return build_note(content)
 
     def _apply_style(self):
         self.setStyleSheet(
@@ -1027,7 +521,7 @@ class JetsonControlPanel(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "选择 Clash Verge 程序",
-            str(Path(DEFAULT_CLASH_PROGRAM).parent),
+            str(Path(self.defaults.clash_program).parent),
             "Executable (*.exe);;All files (*.*)",
         )
         if path:
@@ -1067,13 +561,13 @@ class JetsonControlPanel(QMainWindow):
                 pass
 
         self._set_combo_text(self.ip_combo, self.settings.value("proxy/windows_ip", self.ip_combo.currentText()))
-        self.port_spin.setValue(self._setting_int("proxy/port", DEFAULT_PROXY_PORT))
+        self.port_spin.setValue(self._setting_int("proxy/port", self.defaults.proxy_port))
         self.remote_address_edit.setText(str(self.settings.value("proxy/remote_address", self.remote_address_edit.text())))
         self.clash_program_edit.setText(str(self.settings.value("proxy/clash_program", self.clash_program_edit.text())))
 
-        self.remote_edit.setText(str(self.settings.value("ssh/remote", DEFAULT_REMOTE)))
-        self.remote_path_edit.setText(str(self.settings.value("ssh/remote_path", DEFAULT_REMOTE_PATH)))
-        self.local_root_edit.setText(str(self.settings.value("transfer/local_root", str(APP_DIR))))
+        self.remote_edit.setText(str(self.settings.value("ssh/remote", self.defaults.remote)))
+        self.remote_path_edit.setText(str(self.settings.value("ssh/remote_path", self.defaults.remote_path)))
+        self.local_root_edit.setText(str(self.settings.value("transfer/local_root", str(self.paths.app_dir))))
         self.full_sync_check.setChecked(settings_bool(self.settings.value("sync/full"), False))
         self.dry_run_check.setChecked(settings_bool(self.settings.value("sync/dry_run"), False))
         self.no_delete_check.setChecked(settings_bool(self.settings.value("sync/no_delete"), False))
@@ -1183,74 +677,49 @@ class JetsonControlPanel(QMainWindow):
             self.worker.terminate_process()
             self._append_log("已请求停止当前命令。")
 
-    def _proxy_args(self, include_stop=False):
-        args = [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(WINDOWS_PROXY_SCRIPT),
-            "-Port",
-            str(self.port_spin.value()),
-            "-RemoteAddress",
-            self.remote_address_edit.text().strip(),
-        ]
-        program = self.clash_program_edit.text().strip()
-        if program:
-            args.extend(["-Program", program])
-        if include_stop:
-            args.append("-Stop")
-        return args
-
     def enable_firewall_rule(self):
-        if not WINDOWS_PROXY_SCRIPT.exists():
-            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(WINDOWS_PROXY_SCRIPT))
+        if not self.paths.windows_proxy_script.exists():
+            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(self.paths.windows_proxy_script))
             return
-        self._run_command("启用临时防火墙规则", self._proxy_args())
+        self._run_command(
+            "启用临时防火墙规则",
+            proxy_service.firewall_args(
+                self.paths.windows_proxy_script,
+                self.port_spin.value(),
+                self.remote_address_edit.text().strip(),
+                self.clash_program_edit.text().strip(),
+            ),
+        )
 
     def enable_firewall_rule_elevated(self):
-        if not WINDOWS_PROXY_SCRIPT.exists():
-            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(WINDOWS_PROXY_SCRIPT))
+        if not self.paths.windows_proxy_script.exists():
+            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(self.paths.windows_proxy_script))
             return
-
-        script = str(WINDOWS_PROXY_SCRIPT)
-        arguments = [
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            quote_for_powershell(script),
-            "-Port",
-            str(self.port_spin.value()),
-            "-RemoteAddress",
-            quote_for_powershell(self.remote_address_edit.text().strip()),
-        ]
-        program = self.clash_program_edit.text().strip()
-        if program:
-            arguments.extend(["-Program", quote_for_powershell(program)])
-
-        start_process_args = " ".join(arguments)
-        command = [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            "Start-Process powershell -Verb RunAs -ArgumentList {}".format(
-                quote_for_powershell(start_process_args)
-            ),
-        ]
+        command = proxy_service.elevated_firewall_args(
+            self.paths.windows_proxy_script,
+            self.port_spin.value(),
+            self.remote_address_edit.text().strip(),
+            self.clash_program_edit.text().strip(),
+        )
         self._run_command("以管理员窗口启用防火墙规则", command)
 
     def remove_firewall_rule(self):
-        if not WINDOWS_PROXY_SCRIPT.exists():
-            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(WINDOWS_PROXY_SCRIPT))
+        if not self.paths.windows_proxy_script.exists():
+            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(self.paths.windows_proxy_script))
             return
-        self._run_command("移除临时防火墙规则", self._proxy_args(include_stop=True))
+        self._run_command(
+            "移除临时防火墙规则",
+            proxy_service.firewall_args(
+                self.paths.windows_proxy_script,
+                self.port_spin.value(),
+                self.remote_address_edit.text().strip(),
+                self.clash_program_edit.text().strip(),
+                include_stop=True,
+            ),
+        )
 
     def proxy_command_text(self):
-        return "source ./jetson-proxy-session.sh {} {}".format(
+        return proxy_service.proxy_command_text(
             self.ip_combo.currentText().strip(),
             self.port_spin.value(),
         )
@@ -1265,18 +734,7 @@ class JetsonControlPanel(QMainWindow):
         if not remote:
             QMessageBox.warning(self, "缺少 SSH 地址", "请填写 Jetson SSH，例如 jetson@192.168.55.1。")
             return
-        self._run_command(
-            "测试 SSH",
-            [
-                "ssh",
-                "-o", "BatchMode=yes",
-                "-o", "ConnectTimeout=8",
-                "-o", "StrictHostKeyChecking=accept-new",
-                remote,
-                "echo Jetson SSH OK && uname -a",
-            ],
-            cwd=APP_DIR,
-        )
+        self._run_command("测试 SSH", ssh_service.test_ssh_command(remote), cwd=self.paths.app_dir)
 
     def _remote_or_warn(self):
         remote = self.remote_edit.text().strip() if self.remote_edit else ""
@@ -1291,40 +749,14 @@ class JetsonControlPanel(QMainWindow):
             return
         self._run_command(
             title,
-            [
-                "ssh",
-                "-o", "BatchMode=yes",
-                "-o", "ConnectTimeout=8",
-                "-o", "StrictHostKeyChecking=accept-new",
-                remote,
-                remote_command,
-            ],
-            cwd=APP_DIR,
+            ssh_service.remote_ssh_command(remote, remote_command),
+            cwd=self.paths.app_dir,
         )
 
-    def _display_env_prefix(self):
-        display = self.display_env_edit.text().strip() if self.display_env_edit else ":0"
-        xauthority = self.xauthority_edit.text().strip() if self.xauthority_edit else "$HOME/.Xauthority"
-        if not display:
-            display = ":0"
-
-        prefix = "export DISPLAY={}; ".format(quote_for_bash(display))
-        if xauthority:
-            if xauthority == "$HOME/.Xauthority":
-                prefix += 'export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"; '
-            else:
-                prefix += "export XAUTHORITY={}; ".format(quote_for_bash(xauthority))
-        return prefix
-
     def query_jetson_displays(self):
-        command = (
-            self._display_env_prefix()
-            + "echo DISPLAY=$DISPLAY; "
-            + "echo XAUTHORITY=$XAUTHORITY; "
-            + "if ! command -v xrandr >/dev/null 2>&1; then "
-            + "echo 'xrandr not found. Install it with: sudo apt install x11-xserver-utils'; exit 127; "
-            + "fi; "
-            + "xrandr --query"
+        command = display_service.query_display_command(
+            self.display_env_edit.text().strip(),
+            self.xauthority_edit.text().strip(),
         )
         self._run_jetson_command("查询 Jetson 显示器", command)
 
@@ -1342,116 +774,13 @@ class JetsonControlPanel(QMainWindow):
             QMessageBox.warning(self, "分辨率格式不正确", "请填写类似 1920x1080 的分辨率。")
             return
 
-        remote_script = self._display_env_prefix() + r"""
-set -e
-if ! command -v xrandr >/dev/null 2>&1; then
-    echo "xrandr not found. Install it with: sudo apt install x11-xserver-utils"
-    exit 127
-fi
-
-output=__OUTPUT__
-mode=__MODE__
-rate=__RATE__
-framebuffer_fallback=__FRAMEBUFFER_FALLBACK__
-
-if [ -z "$output" ] || [ "$output" = "auto" ]; then
-    output="$(xrandr --query | awk '$2 == "connected" { print $1; exit }')"
-fi
-
-if [ -z "$output" ]; then
-    if [ "$framebuffer_fallback" = "1" ]; then
-        echo "No connected display output found."
-        echo "Applying framebuffer size only for headless/VNC session: $mode"
-        xrandr --fb "$mode"
-        echo "Framebuffer size applied."
-        xrandr --query
-        exit 0
-    fi
-    echo "No connected display output found."
-    xrandr --query
-    exit 1
-fi
-
-output_state="$(xrandr --query | awk -v out="$output" '$1 == out { print $2; exit }')"
-if [ "$output_state" != "connected" ]; then
-    if [ "$framebuffer_fallback" = "1" ]; then
-        echo "Output $output is not connected; state is: ${output_state:-missing}"
-        echo "Applying framebuffer size only for headless/VNC session: $mode"
-        xrandr --fb "$mode"
-        echo "Framebuffer size applied."
-        xrandr --query
-        exit 0
-    fi
-    echo "Output $output is not connected; state is: ${output_state:-missing}"
-    xrandr --query
-    exit 1
-fi
-
-echo "Output: $output"
-echo "Requested mode: $mode"
-echo "Requested refresh: $rate Hz"
-
-if ! xrandr --query | awk -v out="$output" -v mode="$mode" '
-    $1 == out && $2 == "connected" { inside = 1; next }
-    inside && /^[^[:space:]]/ { inside = 0 }
-    inside && $1 == mode { found = 1 }
-    END { exit found ? 0 : 1 }
-'; then
-    echo "Mode $mode is not listed for $output. Trying to create a temporary mode..."
-    width="${mode%x*}"
-    height="${mode#*x}"
-    height="${height%%_*}"
-
-    if ! printf "%s %s\n" "$width" "$height" | grep -Eq '^[0-9]+ [0-9]+$'; then
-        echo "Cannot create modeline from mode: $mode"
-        exit 1
-    fi
-
-    generate_rate="$rate"
-    if [ "$generate_rate" -le 0 ]; then
-        generate_rate=60
-    fi
-
-    if command -v cvt >/dev/null 2>&1; then
-        modeline="$(cvt "$width" "$height" "$generate_rate" | awk -F'Modeline ' '/Modeline/{print $2}')"
-    elif command -v gtf >/dev/null 2>&1; then
-        modeline="$(gtf "$width" "$height" "$generate_rate" | awk -F'Modeline ' '/Modeline/{print $2}')"
-    else
-        echo "Mode is unavailable and neither cvt nor gtf exists on Jetson."
-        exit 1
-    fi
-
-    if [ -z "$modeline" ]; then
-        echo "Failed to generate modeline."
-        exit 1
-    fi
-
-    generated_mode="$(printf "%s\n" "$modeline" | awk '{print $1}' | tr -d '"')"
-    modeline_args="$(printf "%s\n" "$modeline" | cut -d' ' -f2-)"
-    echo "Generated mode: $generated_mode"
-    xrandr --newmode "$generated_mode" $modeline_args 2>/dev/null || true
-    xrandr --addmode "$output" "$generated_mode" 2>/dev/null || true
-    mode="$generated_mode"
-fi
-
-if [ "$rate" -gt 0 ]; then
-    if ! xrandr --output "$output" --mode "$mode" --rate "$rate"; then
-        echo "Retrying without explicit refresh rate..."
-        xrandr --output "$output" --mode "$mode"
-    fi
-else
-    xrandr --output "$output" --mode "$mode"
-fi
-
-echo "Resolution applied."
-xrandr --query
-"""
-        remote_script = (
-            remote_script
-            .replace("__OUTPUT__", quote_for_bash(output))
-            .replace("__MODE__", quote_for_bash(mode))
-            .replace("__RATE__", quote_for_bash(str(rate)))
-            .replace("__FRAMEBUFFER_FALLBACK__", quote_for_bash("1" if framebuffer_fallback else "0"))
+        remote_script = display_service.set_resolution_command(
+            self.display_env_edit.text().strip(),
+            self.xauthority_edit.text().strip(),
+            output,
+            mode,
+            rate,
+            framebuffer_fallback,
         )
         self._run_jetson_command("设置 Jetson 分辨率", remote_script)
 
@@ -1462,40 +791,11 @@ xrandr --query
             if self.framebuffer_fallback_check
             else True
         )
-        remote_script = self._display_env_prefix() + r"""
-set -e
-if ! command -v xrandr >/dev/null 2>&1; then
-    echo "xrandr not found. Install it with: sudo apt install x11-xserver-utils"
-    exit 127
-fi
-
-output=__OUTPUT__
-framebuffer_fallback=__FRAMEBUFFER_FALLBACK__
-if [ -z "$output" ] || [ "$output" = "auto" ]; then
-    output="$(xrandr --query | awk '$2 == "connected" { print $1; exit }')"
-fi
-
-if [ -z "$output" ]; then
-    if [ "$framebuffer_fallback" = "1" ]; then
-        echo "No connected display output found."
-        echo "Restoring headless/VNC framebuffer to 640x480."
-        xrandr --fb 640x480
-        xrandr --query
-        exit 0
-    fi
-    echo "No connected display output found."
-    xrandr --query
-    exit 1
-fi
-
-echo "Restoring automatic mode for: $output"
-xrandr --output "$output" --auto
-xrandr --query
-"""
-        remote_script = (
-            remote_script
-            .replace("__OUTPUT__", quote_for_bash(output))
-            .replace("__FRAMEBUFFER_FALLBACK__", quote_for_bash("1" if framebuffer_fallback else "0"))
+        remote_script = display_service.auto_display_command(
+            self.display_env_edit.text().strip(),
+            self.xauthority_edit.text().strip(),
+            output,
+            framebuffer_fallback,
         )
         self._run_jetson_command("恢复 Jetson 显示自动模式", remote_script)
 
@@ -1506,7 +806,7 @@ xrandr --query
             return
 
         self._save_settings()
-        script = self._build_ssh_key_setup_script(remote)
+        script = ssh_service.ssh_key_setup_script(remote)
         encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
         command = [
             "powershell",
@@ -1522,106 +822,26 @@ xrandr --query
             creationflags = subprocess.CREATE_NEW_CONSOLE
 
         try:
-            subprocess.Popen(command, cwd=str(APP_DIR), creationflags=creationflags)
+            subprocess.Popen(command, cwd=str(self.paths.app_dir), creationflags=creationflags)
         except Exception as exc:
             QMessageBox.critical(self, "无法打开配置窗口", str(exc))
             return
 
         self._append_log("已打开 SSH Key 配置窗口。按提示输入 Jetson 密码，完成后再点击“测试 SSH”。")
 
-    def _build_ssh_key_setup_script(self, remote):
-        remote_ps = quote_for_powershell(remote)
-        return r"""
-$ErrorActionPreference = 'Stop'
-$Host.UI.RawUI.WindowTitle = 'Jetson SSH Key Setup'
-
-try {
-    $remote = __REMOTE__
-    $sshDir = Join-Path $env:USERPROFILE '.ssh'
-    $key = Join-Path $sshDir 'id_ed25519'
-    $pub = "$key.pub"
-
-    Write-Host ''
-    Write-Host 'Jetson SSH Key Setup'
-    Write-Host "Remote: $remote"
-    Write-Host ''
-
-    if (-not (Test-Path -LiteralPath $sshDir)) {
-        New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
-    }
-
-    if (-not (Test-Path -LiteralPath $pub)) {
-        if (Test-Path -LiteralPath $key) {
-            Write-Host "Public key is missing. Rebuilding it from: $key"
-            & ssh-keygen -y -f $key | Set-Content -LiteralPath $pub -Encoding ascii
-        } else {
-            Write-Host "Generating local SSH key: $key"
-            & ssh-keygen -t ed25519 -N '' -f $key
-        }
-    } else {
-        Write-Host "Using existing public key: $pub"
-    }
-
-    if (-not (Test-Path -LiteralPath $pub)) {
-        throw "Public key was not created: $pub"
-    }
-
-    Write-Host ''
-    Write-Host 'Next step needs the Jetson password.'
-    Write-Host 'The password prompt may not show typed characters; that is normal.'
-    Write-Host ''
-
-    $remotePub = "/tmp/codex-ssh-key-$([guid]::NewGuid().ToString('N')).pub"
-    $scpTarget = $remote + ':' + $remotePub
-
-    Write-Host "Uploading public key to: $scpTarget"
-    & scp -O -o StrictHostKeyChecking=accept-new $pub $scpTarget
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to upload public key to Jetson."
-    }
-
-    Write-Host ''
-    Write-Host 'Installing public key into ~/.ssh/authorized_keys...'
-    $installCommand = "umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; cat $remotePub >> ~/.ssh/authorized_keys; sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys; chmod 700 ~/.ssh; chmod 600 ~/.ssh/authorized_keys; rm -f $remotePub"
-    & ssh -o StrictHostKeyChecking=accept-new $remote $installCommand
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to install public key on Jetson."
-    }
-
-    Write-Host ''
-    Write-Host 'Testing key login without password...'
-    & ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new $remote "echo Jetson SSH key OK && uname -a"
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "SSH key test failed."
-    }
-
-    Write-Host ''
-    Write-Host 'Done. SSH key login is configured.'
-} catch {
-    Write-Host ''
-    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
-}
-
-Write-Host ''
-Read-Host 'Press Enter to close this window'
-""".replace("__REMOTE__", remote_ps)
-
     def upload_proxy_script(self):
         remote = self.remote_edit.text().strip()
         if not remote:
             QMessageBox.warning(self, "缺少 SSH 地址", "请填写 Jetson SSH，例如 jetson@192.168.55.1。")
             return
-        if not JETSON_PROXY_SCRIPT.exists():
-            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(JETSON_PROXY_SCRIPT))
+        if not self.paths.jetson_proxy_script.exists():
+            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(self.paths.jetson_proxy_script))
             return
 
         self._run_command(
             "上传代理脚本到 Jetson",
-            ["scp", "-O", str(JETSON_PROXY_SCRIPT), "{}:~/jetson-proxy-session.sh".format(remote)],
-            cwd=APP_DIR,
+            ssh_service.upload_proxy_script_command(self.paths.jetson_proxy_script, remote),
+            cwd=self.paths.app_dir,
         )
 
     def pull_from_jetson(self):
@@ -1635,51 +855,38 @@ Read-Host 'Press Enter to close this window'
             QMessageBox.warning(self, "目录不存在", "Windows 保存目录不存在: {}".format(local_root))
             return
 
-        source = "{}:{}".format(remote, remote_path)
         self._run_command(
             "从 Jetson 拉取项目",
-            ["scp", "-O", "-r", source, "."],
+            ssh_service.pull_project_command(remote, remote_path),
             cwd=local_root,
         )
 
-    def _python_launcher(self):
-        if os.name == "nt":
-            return ["py", "-3"]
-        return [sys.executable]
-
-    def _sync_command_base(self):
-        remote = self.remote_edit.text().strip()
-        remote_path = self.remote_path_edit.text().strip()
-        command = self._python_launcher() + [
-            str(SYNC_SCRIPT),
-            "--remote",
-            remote,
-            "--remote-path",
-            remote_path,
-        ]
-        return command
-
     def init_sync_state(self):
-        if not SYNC_SCRIPT.exists():
-            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(SYNC_SCRIPT))
+        if not self.paths.sync_script.exists():
+            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(self.paths.sync_script))
             return
-        command = self._sync_command_base() + ["--init"]
-        self._run_command("初始化同步状态", command, cwd=PROJECT_DIR)
+        command = ssh_service.sync_command(
+            self.paths.sync_script,
+            self.remote_edit.text().strip(),
+            self.remote_path_edit.text().strip(),
+            init=True,
+        )
+        self._run_command("初始化同步状态", command, cwd=self.paths.project_dir)
 
     def sync_to_jetson(self):
-        if not SYNC_SCRIPT.exists():
-            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(SYNC_SCRIPT))
+        if not self.paths.sync_script.exists():
+            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(self.paths.sync_script))
             return
 
-        command = self._sync_command_base()
-        if self.full_sync_check.isChecked():
-            command.append("--full")
-        if self.dry_run_check.isChecked():
-            command.append("--dry-run")
-        if self.no_delete_check.isChecked():
-            command.append("--no-delete")
-
-        self._run_command("同步到 Jetson", command, cwd=PROJECT_DIR)
+        command = ssh_service.sync_command(
+            self.paths.sync_script,
+            self.remote_edit.text().strip(),
+            self.remote_path_edit.text().strip(),
+            full=self.full_sync_check.isChecked(),
+            dry_run=self.dry_run_check.isChecked(),
+            no_delete=self.no_delete_check.isChecked(),
+        )
+        self._run_command("同步到 Jetson", command, cwd=self.paths.project_dir)
 
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():
