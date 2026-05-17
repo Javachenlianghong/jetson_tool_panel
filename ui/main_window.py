@@ -15,6 +15,7 @@ from PyQt5.QtCore import QSettings, QTimer, Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -31,8 +32,10 @@ from PyQt5.QtWidgets import (
 )
 
 from core.command_runner import CommandWorker, format_command
+from core.config_store import ProjectConfigStore, slugify
 from core.paths import DEFAULTS, PATHS
 from core.settings import settings_bool
+from core.task_history import TaskHistoryStore
 from services import device_health_service, display_service, proxy_service, remote_ops_service, ssh_service
 from ui.pages.display_page import build_display_page
 from ui.pages.devices_page import build_devices_page
@@ -46,10 +49,12 @@ from ui.pages.model_page import build_model_page
 from ui.pages.peripheral_page import build_peripheral_page
 from ui.pages.process_page import build_process_page
 from ui.pages.proxy_page import build_proxy_page
+from ui.pages.project_page import build_project_page
 from ui.pages.runtime_page import build_runtime_page
 from ui.pages.service_page import build_service_page
 from ui.pages.report_page import build_report_page
 from ui.pages.transfer_page import build_transfer_page
+from ui.pages.workbench_page import build_workbench_page
 
 
 def local_ipv4_candidates():
@@ -115,11 +120,16 @@ class JetsonControlPanel(QMainWindow):
     def __init__(self):
         super().__init__()
         self.settings = QSettings(str(PATHS.config_path), QSettings.IniFormat)
+        self.config_store = ProjectConfigStore(PATHS.project_config_path, DEFAULTS, PATHS)
+        self.config_store.migrate_from_qsettings(self.settings)
+        self.task_history_store = TaskHistoryStore(PATHS.task_history_path)
         self.worker = None
         self.defaults = DEFAULTS
         self.paths = PATHS
 
         self.ip_combo = None
+        self.active_device_combo = None
+        self.active_project_combo = None
         self.port_spin = None
         self.remote_address_edit = None
         self.clash_program_edit = None
@@ -139,6 +149,8 @@ class JetsonControlPanel(QMainWindow):
         self.health_refresh_button = None
         self.health_auto_check = None
         self.health_interval_combo = None
+        self.workbench_labels = {}
+        self.task_history_text = None
         self.run_workdir_edit = None
         self.run_command_edit = None
         self.run_background_check = None
@@ -162,6 +174,14 @@ class JetsonControlPanel(QMainWindow):
         self.device_remote_edit = None
         self.device_remote_path_edit = None
         self.device_local_root_edit = None
+        self.project_id_edit = None
+        self.project_name_edit = None
+        self.project_local_root_edit = None
+        self.project_remote_root_edit = None
+        self.project_build_command_edit = None
+        self.project_run_command_edit = None
+        self.project_stop_pattern_edit = None
+        self.project_log_target_edit = None
         self.report_dir_edit = None
         self.log_edit = None
         self.stop_button = None
@@ -170,6 +190,8 @@ class JetsonControlPanel(QMainWindow):
         self.page_stack = None
         self.current_command_title = None
         self.current_command_output = []
+        self.current_command_started = None
+        self.workflow_queue = []
         self.status_labels = {}
         self.status_dots = {}
         self.health_timer = QTimer(self)
@@ -181,6 +203,9 @@ class JetsonControlPanel(QMainWindow):
         self._apply_style()
         self.refresh_ips()
         self._load_settings()
+        self._refresh_config_selectors()
+        self._apply_active_context_to_forms()
+        self._refresh_task_history()
         self._append_log("就绪。")
 
     def _build_ui(self):
@@ -206,14 +231,27 @@ class JetsonControlPanel(QMainWindow):
         subtitle.setObjectName("Subtitle")
         header_text.addWidget(title)
         header_text.addWidget(subtitle)
+        selector_layout = QHBoxLayout()
+        selector_layout.setSpacing(8)
+        selector_layout.addWidget(QLabel("设备"))
+        self.active_device_combo = QComboBox()
+        self.active_device_combo.currentIndexChanged.connect(self._active_device_changed)
+        selector_layout.addWidget(self.active_device_combo, 1)
+        selector_layout.addWidget(QLabel("项目"))
+        self.active_project_combo = QComboBox()
+        self.active_project_combo.currentIndexChanged.connect(self._active_project_changed)
+        selector_layout.addWidget(self.active_project_combo, 1)
+        header_text.addLayout(selector_layout)
         header_layout.addLayout(header_text, 1)
         header_layout.addWidget(self._build_status_strip(), 2)
         main_layout.addLayout(header_layout)
 
         self.page_stack = QStackedWidget()
         self.page_stack.setObjectName("PageStack")
+        self.page_stack.addWidget(build_workbench_page(self))
         self.page_stack.addWidget(build_proxy_page(self))
         self.page_stack.addWidget(build_transfer_page(self))
+        self.page_stack.addWidget(build_project_page(self))
         self.page_stack.addWidget(build_runtime_page(self))
         self.page_stack.addWidget(build_process_page(self))
         self.page_stack.addWidget(build_logs_page(self))
@@ -276,8 +314,10 @@ class JetsonControlPanel(QMainWindow):
 
         style = self.style()
         nav_specs = [
+            ("工作台", style.standardIcon(QStyle.SP_DesktopIcon)),
             ("代理", style.standardIcon(QStyle.SP_DriveNetIcon)),
             ("项目传输", style.standardIcon(QStyle.SP_DirIcon)),
+            ("项目配置", style.standardIcon(QStyle.SP_FileDialogContentsView)),
             ("运行控制", style.standardIcon(QStyle.SP_MediaPlay)),
             ("进程管理", style.standardIcon(QStyle.SP_FileDialogDetailedView)),
             ("日志查看", style.standardIcon(QStyle.SP_FileIcon)),
@@ -644,6 +684,176 @@ class JetsonControlPanel(QMainWindow):
         except (TypeError, ValueError):
             return default
 
+    def _combo_current_data(self, combo):
+        if not combo or combo.currentIndex() < 0:
+            return None
+        return combo.itemData(combo.currentIndex())
+
+    def _set_combo_by_data(self, combo, value):
+        if not combo:
+            return
+        for index in range(combo.count()):
+            if combo.itemData(index) == value:
+                combo.setCurrentIndex(index)
+                return
+
+    def _refresh_config_selectors(self):
+        if not self.active_device_combo or not self.active_project_combo:
+            return
+
+        active_device = self.config_store.active_device() or {}
+        active_project = self.config_store.active_project() or {}
+
+        self.active_device_combo.blockSignals(True)
+        self.active_device_combo.clear()
+        for device in self.config_store.devices():
+            label = "{} ({})".format(device.get("name", device.get("id")), device.get("ssh", ""))
+            self.active_device_combo.addItem(label, device.get("id"))
+        self._set_combo_by_data(self.active_device_combo, active_device.get("id"))
+        self.active_device_combo.blockSignals(False)
+
+        self.active_project_combo.blockSignals(True)
+        self.active_project_combo.clear()
+        device_id = self._combo_current_data(self.active_device_combo) or active_device.get("id")
+        projects = self.config_store.projects(device_id) or self.config_store.projects()
+        for project in projects:
+            self.active_project_combo.addItem(project.get("name", project.get("id")), project.get("id"))
+        self._set_combo_by_data(self.active_project_combo, active_project.get("id"))
+        self.active_project_combo.blockSignals(False)
+
+    def _active_device_changed(self, *_args):
+        device_id = self._combo_current_data(self.active_device_combo)
+        if not device_id:
+            return
+        self.config_store.set_active_device(device_id)
+        self._refresh_config_selectors()
+        self._apply_active_context_to_forms()
+
+    def _active_project_changed(self, *_args):
+        project_id = self._combo_current_data(self.active_project_combo)
+        if not project_id:
+            return
+        self.config_store.set_active_project(project_id)
+        self._refresh_config_selectors()
+        self._apply_active_context_to_forms()
+
+    def _active_context(self):
+        return self.config_store.current_context()
+
+    def _apply_active_context_to_forms(self):
+        context = self._active_context()
+        device = context["device"]
+        project = context["project"]
+
+        if self.remote_edit:
+            self.remote_edit.setText(device.get("ssh", self.defaults.remote))
+        if self.port_spin:
+            self.port_spin.setValue(int(device.get("proxy_port", self.defaults.proxy_port) or self.defaults.proxy_port))
+        if self.ip_combo and device.get("proxy_host"):
+            self._set_combo_text(self.ip_combo, device.get("proxy_host"))
+        if self.network_windows_ip_edit:
+            self.network_windows_ip_edit.setText(device.get("proxy_host", self.ip_combo.currentText()))
+        if self.network_proxy_port_edit:
+            self.network_proxy_port_edit.setText(str(device.get("proxy_port", self.port_spin.value())))
+
+        if self.remote_path_edit:
+            self.remote_path_edit.setText(project.get("remote_root", self.defaults.remote_path))
+        if self.local_root_edit:
+            self.local_root_edit.setText(project.get("local_root", str(self.paths.app_dir)))
+        if self.run_workdir_edit:
+            self.run_workdir_edit.setText(project.get("remote_root", self.defaults.remote_path))
+        if self.run_command_edit:
+            self.run_command_edit.setText(project.get("run_command", "python3 detect.py"))
+        if self.pkill_pattern_edit:
+            self.pkill_pattern_edit.setText(project.get("stop_pattern", "detect.py"))
+        if self.log_tail_target_combo:
+            self._set_combo_text(self.log_tail_target_combo, project.get("log_target", "run-control.log"))
+        if self.model_workdir_edit:
+            self.model_workdir_edit.setText(project.get("remote_root", self.defaults.remote_path))
+        self._apply_first_model_profile(project)
+        self._load_project_config_to_form(project)
+        self._load_device_config_to_form(device, project)
+        self._refresh_workbench()
+
+    def _apply_first_model_profile(self, project):
+        profiles = project.get("model_profiles", []) if isinstance(project, dict) else []
+        profile = profiles[0] if profiles else {}
+        if self.model_source_edit:
+            self.model_source_edit.setText(profile.get("source", self.model_source_edit.text() or "model.onnx"))
+        if self.model_output_edit:
+            self.model_output_edit.setText(profile.get("output", self.model_output_edit.text() or "model.engine"))
+        if self.model_precision_combo:
+            self._set_combo_text(self.model_precision_combo, profile.get("precision", "fp16"))
+
+    def _load_project_config_to_form(self, project):
+        if not self.project_id_edit or not isinstance(project, dict):
+            return
+        self.project_id_edit.setText(project.get("id", ""))
+        self.project_name_edit.setText(project.get("name", ""))
+        self.project_local_root_edit.setText(project.get("local_root", ""))
+        self.project_remote_root_edit.setText(project.get("remote_root", ""))
+        self.project_build_command_edit.setText(project.get("build_command", ""))
+        self.project_run_command_edit.setText(project.get("run_command", ""))
+        self.project_stop_pattern_edit.setText(project.get("stop_pattern", ""))
+        self.project_log_target_edit.setText(project.get("log_target", ""))
+
+    def _load_device_config_to_form(self, device, project):
+        if not self.device_name_edit or not isinstance(device, dict):
+            return
+        self.device_name_edit.setText(device.get("name", ""))
+        self.device_remote_edit.setText(device.get("ssh", ""))
+        self.device_remote_path_edit.setText(project.get("remote_root", "") if isinstance(project, dict) else "")
+        self.device_local_root_edit.setText(project.get("local_root", "") if isinstance(project, dict) else "")
+
+    def _refresh_workbench(self):
+        if not self.workbench_labels:
+            return
+        context = self._active_context()
+        device = context["device"]
+        project = context["project"]
+        values = {
+            "device": device.get("name", "-"),
+            "ssh": device.get("ssh", "-"),
+            "project": project.get("name", "-"),
+            "remote_root": project.get("remote_root", "-"),
+            "local_root": project.get("local_root", "-"),
+        }
+        for key, label in self.workbench_labels.items():
+            label.setText(values.get(key, "-"))
+
+    def _persist_active_config_from_forms(self):
+        if not self.remote_edit or not self.remote_path_edit:
+            return
+        context = self._active_context()
+        device = context["device"]
+        project = context["project"]
+        device_id = device.get("id") or "device"
+        project_id = project.get("id") or "project"
+
+        self.config_store.upsert_device({
+            "id": device_id,
+            "name": device.get("name", device_id),
+            "type": device.get("type", "linux"),
+            "ssh": self.remote_edit.text().strip(),
+            "proxy_host": self.ip_combo.currentText().strip() if self.ip_combo else device.get("proxy_host", ""),
+            "proxy_port": self.port_spin.value() if self.port_spin else device.get("proxy_port", self.defaults.proxy_port),
+        })
+
+        project_payload = dict(project)
+        project_payload.update({
+            "id": project_id,
+            "device_id": device_id,
+            "name": project.get("name", project_id),
+            "local_root": self.local_root_edit.text().strip(),
+            "remote_root": self.remote_path_edit.text().strip(),
+            "build_command": self.project_build_command_edit.text().strip() if self.project_build_command_edit else project.get("build_command", ""),
+            "run_command": self.run_command_edit.text().strip() if self.run_command_edit else project.get("run_command", ""),
+            "stop_pattern": self.pkill_pattern_edit.text().strip() if self.pkill_pattern_edit else project.get("stop_pattern", ""),
+            "log_target": self.log_tail_target_combo.currentText().strip() if self.log_tail_target_combo else project.get("log_target", ""),
+        })
+        self.config_store.upsert_project(project_payload)
+        self._refresh_workbench()
+
     def _load_settings(self):
         geometry = self.settings.value("window/geometry")
         if geometry:
@@ -731,6 +941,7 @@ class JetsonControlPanel(QMainWindow):
         self.settings.setValue("model/output", self.model_output_edit.text().strip())
         self.settings.setValue("model/precision", self.model_precision_combo.currentText().strip())
         self.settings.setValue("report/dir", self.report_dir_edit.text().strip())
+        self._persist_active_config_from_forms()
         self.settings.sync()
 
     def _sync_default_cidr(self, ip_address):
@@ -764,6 +975,7 @@ class JetsonControlPanel(QMainWindow):
         self._set_running(True)
         self.current_command_title = title
         self.current_command_output = []
+        self.current_command_started = datetime.now()
 
         self.worker = CommandWorker(command, cwd=cwd, parent=self)
         self.worker.output.connect(self._handle_command_output)
@@ -786,8 +998,12 @@ class JetsonControlPanel(QMainWindow):
             self._handle_command_success(title)
         else:
             self._append_log("命令失败，退出码: {}".format(return_code))
+            self.workflow_queue = []
+        self._record_task_history(title, return_code)
         self._set_running(False)
         self.current_command_title = None
+        if return_code == 0 and self.workflow_queue:
+            self._run_next_workflow_command()
 
     def _handle_command_success(self, title):
         if title == "测试 SSH":
@@ -808,6 +1024,43 @@ class JetsonControlPanel(QMainWindow):
             self._update_health_page(data)
         elif title == "生成诊断报告":
             self._save_diagnostic_report()
+
+    def _record_task_history(self, title, return_code):
+        context = self._active_context()
+        device = context["device"]
+        project = context["project"]
+        started = self.current_command_started or datetime.now()
+        entry = {
+            "title": title,
+            "device": device.get("name", ""),
+            "project": project.get("name", ""),
+            "started_at": started.strftime("%Y-%m-%d %H:%M:%S"),
+            "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "return_code": return_code,
+            "tail": "\n".join(self.current_command_output[-12:]),
+        }
+        self.task_history_store.add(entry)
+        self._refresh_task_history()
+
+    def _refresh_task_history(self):
+        if not self.task_history_text:
+            return
+        history = self.task_history_store.load()[:8]
+        if not history:
+            self.task_history_text.setText("暂无任务历史")
+            return
+        lines = []
+        for item in history:
+            lines.append(
+                "{time} [{code}] {title} / {device} / {project}".format(
+                    time=item.get("finished_at", ""),
+                    code=item.get("return_code", ""),
+                    title=item.get("title", ""),
+                    device=item.get("device", ""),
+                    project=item.get("project", ""),
+                )
+            )
+        self.task_history_text.setText("\n".join(lines))
 
     def stop_current_command(self):
         if self.worker and self.worker.isRunning():
@@ -922,6 +1175,116 @@ class JetsonControlPanel(QMainWindow):
     def _update_health_page(self, data):
         for key, label in self.health_labels.items():
             label.setText(data.get(key) or "未知")
+
+    def _current_project(self):
+        return self._active_context()["project"]
+
+    def _current_device(self):
+        return self._active_context()["device"]
+
+    def _remote_command_for_project(self, title, remote_command):
+        remote = self._current_device().get("ssh") or self.remote_edit.text().strip()
+        return (
+            title,
+            ssh_service.remote_ssh_command(remote, remote_command),
+            self.paths.app_dir,
+        )
+
+    def _project_sync_step(self):
+        project = self._current_project()
+        device = self._current_device()
+        command = ssh_service.sync_command(
+            self.paths.sync_script,
+            device.get("ssh", self.remote_edit.text().strip()),
+            project.get("remote_root", self.remote_path_edit.text().strip()),
+            full=self.full_sync_check.isChecked(),
+            dry_run=self.dry_run_check.isChecked(),
+            no_delete=self.no_delete_check.isChecked(),
+        )
+        return ("同步到 Jetson", command, self.paths.project_dir)
+
+    def _run_next_workflow_command(self):
+        if not self.workflow_queue:
+            return
+        title, command, cwd = self.workflow_queue.pop(0)
+        self._run_command(title, command, cwd=cwd)
+
+    def _start_workflow(self, steps):
+        if self.worker and self.worker.isRunning():
+            QMessageBox.warning(self, "命令正在运行", "请等待当前命令结束，或先点击“停止当前命令”。")
+            return
+        self.workflow_queue = list(steps)
+        self._run_next_workflow_command()
+
+    def workflow_sync(self):
+        if not self.paths.sync_script.exists():
+            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(self.paths.sync_script))
+            return
+        self._start_workflow([self._project_sync_step()])
+
+    def workflow_build(self):
+        project = self._current_project()
+        command = remote_ops_service.run_program_command(
+            project.get("remote_root", self.remote_path_edit.text().strip()),
+            project.get("build_command", self.project_build_command_edit.text().strip() or "true"),
+            background=False,
+        )
+        self._start_workflow([self._remote_command_for_project("项目构建", command)])
+
+    def workflow_run(self):
+        project = self._current_project()
+        command = remote_ops_service.run_program_command(
+            project.get("remote_root", self.remote_path_edit.text().strip()),
+            project.get("run_command", self.run_command_edit.text().strip()),
+            background=True,
+        )
+        self._start_workflow([self._remote_command_for_project("项目后台运行", command)])
+
+    def workflow_stop(self):
+        pattern = self._current_project().get("stop_pattern", self.pkill_pattern_edit.text().strip())
+        if not pattern:
+            QMessageBox.warning(self, "缺少停止关键字", "请先在项目配置里填写停止关键字。")
+            return
+        answer = QMessageBox.question(
+            self,
+            "确认停止项目进程",
+            "确定结束远端命令行匹配“{}”的进程？".format(pattern),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self._start_workflow([
+            self._remote_command_for_project("停止项目进程", remote_ops_service.pkill_pattern_command(pattern))
+        ])
+
+    def workflow_logs(self):
+        target = self._current_project().get("log_target", self.log_tail_target_combo.currentText())
+        self._start_workflow([
+            self._remote_command_for_project("实时查看项目日志", remote_ops_service.tail_log_command(target, 120))
+        ])
+
+    def workflow_sync_build_run(self):
+        if not self.paths.sync_script.exists():
+            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(self.paths.sync_script))
+            return
+        project = self._current_project()
+        build_command = remote_ops_service.run_program_command(
+            project.get("remote_root", self.remote_path_edit.text().strip()),
+            project.get("build_command", self.project_build_command_edit.text().strip() or "true"),
+            background=False,
+        )
+        run_command = remote_ops_service.run_program_command(
+            project.get("remote_root", self.remote_path_edit.text().strip()),
+            project.get("run_command", self.run_command_edit.text().strip()),
+            background=True,
+        )
+        steps = [
+            self._project_sync_step(),
+            self._remote_command_for_project("项目构建", build_command),
+            self._remote_command_for_project("项目后台运行", run_command),
+        ]
+        self._start_workflow(steps)
 
     def run_remote_program(self):
         command = self.run_command_edit.text().strip()
@@ -1141,10 +1504,12 @@ class JetsonControlPanel(QMainWindow):
             return
         current = self.device_profile_combo.currentText()
         self.device_profile_combo.clear()
-        names = sorted(self._device_profiles().keys())
-        self.device_profile_combo.addItems(names)
-        if current and current in names:
-            self.device_profile_combo.setCurrentText(current)
+        for device in self.config_store.devices():
+            self.device_profile_combo.addItem(device.get("name", device.get("id")), device.get("id"))
+        if current:
+            index = self.device_profile_combo.findText(current)
+            if index >= 0:
+                self.device_profile_combo.setCurrentIndex(index)
 
     def fill_device_profile_from_current(self):
         self.device_remote_edit.setText(self.remote_edit.text().strip())
@@ -1158,51 +1523,117 @@ class JetsonControlPanel(QMainWindow):
         if not name:
             QMessageBox.warning(self, "缺少名称", "请填写设备档案名称。")
             return
-        profiles = self._device_profiles()
-        profiles[name] = {
-            "remote": self.device_remote_edit.text().strip(),
-            "remote_path": self.device_remote_path_edit.text().strip(),
+        device_id = slugify(name, "device")
+        self.config_store.upsert_device({
+            "id": device_id,
+            "name": name,
+            "type": "linux",
+            "ssh": self.device_remote_edit.text().strip(),
+            "proxy_host": self.ip_combo.currentText().strip(),
+            "proxy_port": self.port_spin.value(),
+        })
+        current_project = self._current_project()
+        project_payload = dict(current_project)
+        project_payload.update({
+            "device_id": device_id,
             "local_root": self.device_local_root_edit.text().strip(),
-        }
-        self._write_device_profiles(profiles)
+            "remote_root": self.device_remote_path_edit.text().strip(),
+        })
+        self.config_store.upsert_project(project_payload)
+        self._refresh_config_selectors()
         self._refresh_device_profile_combo()
-        self.device_profile_combo.setCurrentText(name)
+        self._apply_active_context_to_forms()
         self._append_log("已保存设备档案: " + name)
 
     def load_device_profile(self):
-        name = self.device_profile_combo.currentText().strip()
-        profile = self._device_profiles().get(name)
-        if not profile:
+        device_id = self._combo_current_data(self.device_profile_combo)
+        device = self.config_store.get_device(device_id)
+        if not device:
             QMessageBox.warning(self, "找不到档案", "请选择要加载的设备档案。")
             return
-        self.remote_edit.setText(profile.get("remote", ""))
-        self.remote_path_edit.setText(profile.get("remote_path", ""))
-        self.local_root_edit.setText(profile.get("local_root", ""))
-        self.device_name_edit.setText(name)
-        self.device_remote_edit.setText(profile.get("remote", ""))
-        self.device_remote_path_edit.setText(profile.get("remote_path", ""))
-        self.device_local_root_edit.setText(profile.get("local_root", ""))
-        self._save_settings()
-        self._append_log("已加载设备档案: " + name)
+        self.config_store.set_active_device(device_id)
+        self._refresh_config_selectors()
+        self._apply_active_context_to_forms()
+        self._append_log("已加载设备档案: " + device.get("name", device_id))
 
     def delete_device_profile(self):
-        name = self.device_profile_combo.currentText().strip()
-        if not name:
+        device_id = self._combo_current_data(self.device_profile_combo)
+        device = self.config_store.get_device(device_id)
+        if not device:
             return
         answer = QMessageBox.question(
             self,
             "确认删除档案",
-            "确定删除设备档案？\n\n{}".format(name),
+            "确定删除设备档案及其关联项目？\n\n{}".format(device.get("name", device_id)),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
         if answer != QMessageBox.Yes:
             return
-        profiles = self._device_profiles()
-        profiles.pop(name, None)
-        self._write_device_profiles(profiles)
+        self.config_store.delete_device(device_id)
+        self._refresh_config_selectors()
         self._refresh_device_profile_combo()
-        self._append_log("已删除设备档案: " + name)
+        self._apply_active_context_to_forms()
+        self._append_log("已删除设备档案: " + device.get("name", device_id))
+
+    def fill_project_config_from_current(self):
+        context = self._active_context()
+        project = context["project"]
+        self.project_id_edit.setText(project.get("id", "project"))
+        self.project_name_edit.setText(project.get("name", "Project"))
+        self.project_local_root_edit.setText(self.local_root_edit.text().strip())
+        self.project_remote_root_edit.setText(self.remote_path_edit.text().strip())
+        self.project_build_command_edit.setText(project.get("build_command", "cmake --build build -j4"))
+        self.project_run_command_edit.setText(self.run_command_edit.text().strip())
+        self.project_stop_pattern_edit.setText(self.pkill_pattern_edit.text().strip())
+        self.project_log_target_edit.setText(self.log_tail_target_combo.currentText().strip())
+
+    def load_project_config_to_form(self):
+        self._load_project_config_to_form(self._current_project())
+
+    def save_project_config(self):
+        name = self.project_name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "缺少项目名称", "请填写项目名称。")
+            return
+        project_id = self.project_id_edit.text().strip() or slugify(name, "project")
+        device_id = self._current_device().get("id") or self._combo_current_data(self.active_device_combo)
+        self.config_store.upsert_project({
+            "id": project_id,
+            "device_id": device_id,
+            "name": name,
+            "local_root": self.project_local_root_edit.text().strip(),
+            "remote_root": self.project_remote_root_edit.text().strip(),
+            "build_command": self.project_build_command_edit.text().strip(),
+            "run_command": self.project_run_command_edit.text().strip(),
+            "stop_pattern": self.project_stop_pattern_edit.text().strip(),
+            "log_target": self.project_log_target_edit.text().strip(),
+            "model_profiles": self._current_project().get("model_profiles", []),
+        })
+        self._refresh_config_selectors()
+        self._set_combo_by_data(self.active_project_combo, project_id)
+        self.config_store.set_active_project(project_id)
+        self._apply_active_context_to_forms()
+        self._append_log("已保存项目配置: " + name)
+
+    def delete_project_config(self):
+        project = self._current_project()
+        project_id = project.get("id")
+        if not project_id:
+            return
+        answer = QMessageBox.question(
+            self,
+            "确认删除项目",
+            "确定删除项目配置？\n\n{}".format(project.get("name", project_id)),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.config_store.delete_project(project_id)
+        self._refresh_config_selectors()
+        self._apply_active_context_to_forms()
+        self._append_log("已删除项目配置: " + project.get("name", project_id))
 
     def choose_report_dir(self):
         path = QFileDialog.getExistingDirectory(self, "选择诊断报告保存目录", self.report_dir_edit.text())
