@@ -40,6 +40,9 @@ SCRIPT_DIR = first_existing_path(
     APP_DIR / "jetson_tool_panel" / "scripts",
 )
 CONFIG_PATH = TOOL_DIR / "settings.ini"
+CONFIG_DIR = TOOL_DIR / "config"
+PROJECT_CONFIG_PATH = CONFIG_DIR / "projects.json"
+TASK_HISTORY_PATH = CONFIG_DIR / "task_history.json"
 
 WINDOWS_PROXY_SCRIPT = first_existing_path(
     SCRIPT_DIR / "windows-clash-lan-temp.ps1",
@@ -73,6 +76,9 @@ class AppPaths:
     tool_dir: Path = TOOL_DIR
     script_dir: Path = SCRIPT_DIR
     config_path: Path = CONFIG_PATH
+    config_dir: Path = CONFIG_DIR
+    project_config_path: Path = PROJECT_CONFIG_PATH
+    task_history_path: Path = TASK_HISTORY_PATH
     windows_proxy_script: Path = WINDOWS_PROXY_SCRIPT
     jetson_proxy_script: Path = JETSON_PROXY_SCRIPT
     project_dir: Path = PROJECT_DIR

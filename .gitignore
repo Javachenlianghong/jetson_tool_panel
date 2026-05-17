@@ -4,6 +4,8 @@ __pycache__/
 *.log
 settings.ini
 reports/
+config/projects.json
+config/task_history.json
 .pytest_cache/
 .mypy_cache/
 .venv/

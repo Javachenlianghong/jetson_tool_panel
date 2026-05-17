@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "active_device_id": "jetson-default",
+  "active_project_id": "yolov8-trt",
+  "devices": [
+    {
+      "id": "jetson-default",
+      "name": "Jetson Default",
+      "type": "jetson",
+      "ssh": "jetson@192.168.55.1",
+      "proxy_host": "192.168.1.11",
+      "proxy_port": 7897
+    }
+  ],
+  "projects": [
+    {
+      "id": "yolov8-trt",
+      "device_id": "jetson-default",
+      "name": "YOLOv8 TensorRT",
+      "local_root": "C:/Users/Administrator/Desktop/code/jetson/YoloV8-TensorRT-Jetson_Nano",
+      "remote_root": "/home/jetson/YoloV8-TensorRT-Jetson_Nano",
+      "build_command": "cmake --build build -j4",
+      "run_command": "python3 detect.py",
+      "stop_pattern": "detect.py",
+      "log_target": "run-control.log",
+      "model_profiles": [
+        {
+          "id": "default-onnx",
+          "name": "Default ONNX",
+          "source": "model.onnx",
+          "output": "model.engine",
+          "precision": "fp16",
+          "test_image": "test.jpg"
+        }
+      ]
+    }
+  ]
+}
