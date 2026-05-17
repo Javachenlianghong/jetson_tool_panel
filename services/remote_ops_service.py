@@ -319,3 +319,39 @@ echo "./rknn_yolov8_demo __OUTPUT__ ./test.jpg"
 """.replace("__WORKDIR__", quote_for_bash(workdir.strip() or ".")).replace(
         "__MODEL__", model_path.strip()
     ).replace("__OUTPUT__", output_path.strip())
+
+
+def health_report_section_command():
+    return r"""
+echo "Hostname: $(hostname 2>/dev/null || echo unknown)"
+echo "Kernel: $(uname -a 2>/dev/null || echo unknown)"
+echo "Uptime: $(uptime -p 2>/dev/null || cat /proc/uptime 2>/dev/null || echo unknown)"
+echo "Load: $(cat /proc/loadavg 2>/dev/null || echo unknown)"
+free -h 2>/dev/null || true
+df -h / 2>/dev/null || true
+for zone in /sys/class/thermal/thermal_zone*; do
+    [ -e "$zone/temp" ] || continue
+    name="$(cat "$zone/type" 2>/dev/null || basename "$zone")"
+    raw="$(cat "$zone/temp" 2>/dev/null || true)"
+    printf "%s %s\n" "$name" "$raw"
+done
+"""
+
+
+def diagnostic_report_command(windows_ip, port, video_device="/dev/video0"):
+    return "\n".join([
+        "echo '# Remote Diagnostic Report'",
+        "date 2>/dev/null || true",
+        "echo",
+        "echo '## Device Health'",
+        health_report_section_command(),
+        "echo",
+        "echo '## Network'",
+        network_diagnostics_command(windows_ip, port),
+        "echo",
+        "echo '## Environment'",
+        environment_check_command(),
+        "echo",
+        "echo '## Peripherals'",
+        peripheral_check_command(video_device),
+    ])

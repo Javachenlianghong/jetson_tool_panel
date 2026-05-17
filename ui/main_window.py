@@ -3,6 +3,7 @@
 """Main window for Jetson Tool Panel."""
 
 import base64
+import json
 import os
 import socket
 import subprocess
@@ -22,6 +23,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QScrollArea,
     QStackedWidget,
     QStyle,
     QVBoxLayout,
@@ -33,6 +35,7 @@ from core.paths import DEFAULTS, PATHS
 from core.settings import settings_bool
 from services import device_health_service, display_service, proxy_service, remote_ops_service, ssh_service
 from ui.pages.display_page import build_display_page
+from ui.pages.devices_page import build_devices_page
 from ui.pages.health_page import build_health_page
 from ui.pages.help_page import build_help_page
 from ui.pages.logs_page import build_logs_page
@@ -45,6 +48,7 @@ from ui.pages.process_page import build_process_page
 from ui.pages.proxy_page import build_proxy_page
 from ui.pages.runtime_page import build_runtime_page
 from ui.pages.service_page import build_service_page
+from ui.pages.report_page import build_report_page
 from ui.pages.transfer_page import build_transfer_page
 
 
@@ -153,6 +157,12 @@ class JetsonControlPanel(QMainWindow):
         self.model_source_edit = None
         self.model_output_edit = None
         self.model_precision_combo = None
+        self.device_profile_combo = None
+        self.device_name_edit = None
+        self.device_remote_edit = None
+        self.device_remote_path_edit = None
+        self.device_local_root_edit = None
+        self.report_dir_edit = None
         self.log_edit = None
         self.stop_button = None
         self.command_buttons = []
@@ -213,6 +223,8 @@ class JetsonControlPanel(QMainWindow):
         self.page_stack.addWidget(build_files_page(self))
         self.page_stack.addWidget(build_service_page(self))
         self.page_stack.addWidget(build_model_page(self))
+        self.page_stack.addWidget(build_devices_page(self))
+        self.page_stack.addWidget(build_report_page(self))
         self.page_stack.addWidget(build_health_page(self))
         self.page_stack.addWidget(build_display_page(self))
         self.page_stack.addWidget(build_help_page(self))
@@ -249,10 +261,10 @@ class JetsonControlPanel(QMainWindow):
     def _build_sidebar(self):
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(148)
+        sidebar.setFixedWidth(156)
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(12, 14, 12, 14)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 14, 10, 14)
+        layout.setSpacing(6)
 
         brand = QLabel("Jetson")
         brand.setObjectName("SidebarBrand")
@@ -275,17 +287,32 @@ class JetsonControlPanel(QMainWindow):
             ("文件管理", style.standardIcon(QStyle.SP_DirOpenIcon)),
             ("服务管理", style.standardIcon(QStyle.SP_BrowserReload)),
             ("模型部署", style.standardIcon(QStyle.SP_ArrowForward)),
+            ("设备档案", style.standardIcon(QStyle.SP_FileDialogListView)),
+            ("诊断报告", style.standardIcon(QStyle.SP_FileDialogInfoView)),
             ("设备状态", style.standardIcon(QStyle.SP_ComputerIcon)),
             ("显示设置", style.standardIcon(QStyle.SP_ComputerIcon)),
             ("命令参考", style.standardIcon(QStyle.SP_FileDialogInfoView)),
         ]
+
+        nav_container = QWidget()
+        nav_layout = QVBoxLayout(nav_container)
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        nav_layout.setSpacing(4)
         for index, (text, icon) in enumerate(nav_specs):
             button = self._build_nav_button(text, icon)
             button.clicked.connect(lambda checked=False, page=index: self._switch_page(page))
             self.nav_buttons.append(button)
-            layout.addWidget(button)
+            nav_layout.addWidget(button)
+        nav_layout.addStretch(1)
 
-        layout.addStretch(1)
+        nav_scroll = QScrollArea()
+        nav_scroll.setObjectName("SidebarScroll")
+        nav_scroll.setWidgetResizable(True)
+        nav_scroll.setFrameShape(QFrame.NoFrame)
+        nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        nav_scroll.setWidget(nav_container)
+        layout.addWidget(nav_scroll, 1)
+
         settings_button = self._build_nav_button("设置", style.standardIcon(QStyle.SP_FileDialogDetailedView))
         settings_button.setCheckable(False)
         settings_button.clicked.connect(lambda: self._append_log("设置入口暂未启用；常用设置会自动保存到 settings.ini。"))
@@ -300,7 +327,7 @@ class JetsonControlPanel(QMainWindow):
         button = QPushButton(text)
         button.setObjectName("NavButton")
         button.setCheckable(True)
-        button.setMinimumHeight(38)
+        button.setMinimumHeight(32)
         button.setCursor(Qt.PointingHandCursor)
         if icon is not None:
             button.setIcon(icon)
@@ -661,6 +688,8 @@ class JetsonControlPanel(QMainWindow):
         self.model_source_edit.setText(str(self.settings.value("model/source", self.model_source_edit.text())))
         self.model_output_edit.setText(str(self.settings.value("model/output", self.model_output_edit.text())))
         self._set_combo_text(self.model_precision_combo, self.settings.value("model/precision", "fp16"))
+        self.report_dir_edit.setText(str(self.settings.value("report/dir", self.report_dir_edit.text())))
+        self._refresh_device_profile_combo()
         self._switch_page(self._setting_int("window/current_page", 0))
 
     def _save_settings(self):
@@ -701,6 +730,7 @@ class JetsonControlPanel(QMainWindow):
         self.settings.setValue("model/source", self.model_source_edit.text().strip())
         self.settings.setValue("model/output", self.model_output_edit.text().strip())
         self.settings.setValue("model/precision", self.model_precision_combo.currentText().strip())
+        self.settings.setValue("report/dir", self.report_dir_edit.text().strip())
         self.settings.sync()
 
     def _sync_default_cidr(self, ip_address):
@@ -776,6 +806,8 @@ class JetsonControlPanel(QMainWindow):
         elif title == "刷新设备状态":
             data = device_health_service.parse_health_output(self.current_command_output)
             self._update_health_page(data)
+        elif title == "生成诊断报告":
+            self._save_diagnostic_report()
 
     def stop_current_command(self):
         if self.worker and self.worker.isRunning():
@@ -1091,6 +1123,122 @@ class JetsonControlPanel(QMainWindow):
         command = self._current_tensorrt_command()
         QApplication.clipboard().setText(command)
         self._append_log("已复制 TensorRT 命令模板: " + command)
+
+    def _device_profiles(self):
+        raw = self.settings.value("devices/profiles", "{}")
+        try:
+            profiles = json.loads(str(raw))
+        except (TypeError, ValueError):
+            profiles = {}
+        return profiles if isinstance(profiles, dict) else {}
+
+    def _write_device_profiles(self, profiles):
+        self.settings.setValue("devices/profiles", json.dumps(profiles, ensure_ascii=False, sort_keys=True))
+        self.settings.sync()
+
+    def _refresh_device_profile_combo(self):
+        if not self.device_profile_combo:
+            return
+        current = self.device_profile_combo.currentText()
+        self.device_profile_combo.clear()
+        names = sorted(self._device_profiles().keys())
+        self.device_profile_combo.addItems(names)
+        if current and current in names:
+            self.device_profile_combo.setCurrentText(current)
+
+    def fill_device_profile_from_current(self):
+        self.device_remote_edit.setText(self.remote_edit.text().strip())
+        self.device_remote_path_edit.setText(self.remote_path_edit.text().strip())
+        self.device_local_root_edit.setText(self.local_root_edit.text().strip())
+        name = self.remote_edit.text().strip().split("@")[-1] or "设备"
+        self.device_name_edit.setText(name)
+
+    def save_device_profile(self):
+        name = self.device_name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "缺少名称", "请填写设备档案名称。")
+            return
+        profiles = self._device_profiles()
+        profiles[name] = {
+            "remote": self.device_remote_edit.text().strip(),
+            "remote_path": self.device_remote_path_edit.text().strip(),
+            "local_root": self.device_local_root_edit.text().strip(),
+        }
+        self._write_device_profiles(profiles)
+        self._refresh_device_profile_combo()
+        self.device_profile_combo.setCurrentText(name)
+        self._append_log("已保存设备档案: " + name)
+
+    def load_device_profile(self):
+        name = self.device_profile_combo.currentText().strip()
+        profile = self._device_profiles().get(name)
+        if not profile:
+            QMessageBox.warning(self, "找不到档案", "请选择要加载的设备档案。")
+            return
+        self.remote_edit.setText(profile.get("remote", ""))
+        self.remote_path_edit.setText(profile.get("remote_path", ""))
+        self.local_root_edit.setText(profile.get("local_root", ""))
+        self.device_name_edit.setText(name)
+        self.device_remote_edit.setText(profile.get("remote", ""))
+        self.device_remote_path_edit.setText(profile.get("remote_path", ""))
+        self.device_local_root_edit.setText(profile.get("local_root", ""))
+        self._save_settings()
+        self._append_log("已加载设备档案: " + name)
+
+    def delete_device_profile(self):
+        name = self.device_profile_combo.currentText().strip()
+        if not name:
+            return
+        answer = QMessageBox.question(
+            self,
+            "确认删除档案",
+            "确定删除设备档案？\n\n{}".format(name),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        profiles = self._device_profiles()
+        profiles.pop(name, None)
+        self._write_device_profiles(profiles)
+        self._refresh_device_profile_combo()
+        self._append_log("已删除设备档案: " + name)
+
+    def choose_report_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "选择诊断报告保存目录", self.report_dir_edit.text())
+        if path:
+            self.report_dir_edit.setText(path)
+
+    def generate_diagnostic_report(self):
+        command = remote_ops_service.diagnostic_report_command(
+            self.network_windows_ip_edit.text(),
+            self.network_proxy_port_edit.text(),
+            self.video_device_edit.text(),
+        )
+        self._run_jetson_command("生成诊断报告", command)
+
+    def _save_diagnostic_report(self):
+        report_dir = Path(self.report_dir_edit.text().strip() or (self.paths.tool_dir / "reports"))
+        report_dir.mkdir(parents=True, exist_ok=True)
+        safe_remote = self.remote_edit.text().strip().replace("@", "_").replace(":", "_").replace("/", "_")
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        report_path = report_dir / "diagnostic-{}-{}.md".format(safe_remote or "device", timestamp)
+        body = "\n".join(self.current_command_output)
+        header = [
+            "# Jetson Tool Panel 诊断报告",
+            "",
+            "- Remote: {}".format(self.remote_edit.text().strip()),
+            "- Windows IP: {}".format(self.ip_combo.currentText().strip()),
+            "- Proxy Port: {}".format(self.port_spin.value()),
+            "- Generated: {}".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            "",
+            "```text",
+            body,
+            "```",
+            "",
+        ]
+        report_path.write_text("\n".join(header), encoding="utf-8")
+        self._append_log("诊断报告已保存: " + str(report_path))
 
     def query_jetson_displays(self):
         command = display_service.query_display_command(
