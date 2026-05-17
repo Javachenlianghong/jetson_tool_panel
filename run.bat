@@ -5,9 +5,9 @@ cd /d "%~dp0"
 
 where py >nul 2>nul
 if %errorlevel%==0 (
-    py -3 "%~dp0jetson_gui.py"
+    py -3 "%~dp0app.py"
 ) else (
-    python "%~dp0jetson_gui.py"
+    python "%~dp0app.py"
 )
 
 if errorlevel 1 (

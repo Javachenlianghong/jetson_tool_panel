@@ -32,7 +32,7 @@ py -3 -m PyInstaller ^
     --workpath "%~dp0build\pyinstaller" ^
     --specpath "%~dp0build\pyinstaller" ^
     --add-data "%~dp0scripts;scripts" ^
-    "%~dp0jetson_gui.py"
+    "%~dp0app.py"
 
 if errorlevel 1 (
     echo.
