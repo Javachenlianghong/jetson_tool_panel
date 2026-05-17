@@ -44,6 +44,7 @@ def build_model_page(window):
         ("加载模型配置", window.load_model_profile, True),
         ("删除模型配置", window.delete_model_profile, False),
         ("运行 TensorRT 转换", window.run_tensorrt_conversion, True),
+        ("运行 Benchmark", window.run_model_benchmark, True),
         ("显示 RKNN 模板", window.show_rknn_template, False),
         ("复制当前命令", window.copy_model_command, False),
     ]:

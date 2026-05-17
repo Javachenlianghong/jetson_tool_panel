@@ -277,6 +277,61 @@ PY
 """
 
 
+def device_init_advice_command(windows_ip, port):
+    return r"""
+windows_ip=__WINDOWS_IP__
+proxy_port=__PROXY_PORT__
+
+section() {
+    echo
+    echo "== $1 =="
+}
+
+echo "Device initialization checklist"
+date 2>/dev/null || true
+
+section "System identity"
+hostname 2>/dev/null || true
+cat /etc/os-release 2>/dev/null | head -n 8 || true
+uname -a 2>/dev/null || true
+
+section "Time and locale"
+timedatectl status 2>/dev/null || date
+locale 2>/dev/null | head -n 12 || true
+
+section "Network and proxy"
+ip -o -4 addr show 2>/dev/null || ifconfig 2>/dev/null || true
+printf 'Suggested temporary proxy:\n'
+printf '  export http_proxy=http://%s:%s\n' "$windows_ip" "$proxy_port"
+printf '  export https_proxy=http://%s:%s\n' "$windows_ip" "$proxy_port"
+
+section "APT sources"
+grep -Rhs '^[^#]' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null | head -n 60 || echo "apt sources unavailable"
+
+section "pip config"
+python3 -m pip config list 2>/dev/null || pip3 config list 2>/dev/null || echo "pip config unavailable"
+
+section "Required tools"
+for cmd in git cmake make gcc g++ python3 pip3 curl rsync; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+        printf '[OK] %s -> %s\n' "$cmd" "$(command -v "$cmd")"
+    else
+        printf '[MISS] %s\n' "$cmd"
+    fi
+done
+
+section "Suggested install commands"
+cat <<'EOF'
+# Review before running manually:
+sudo apt update
+sudo apt install -y git cmake build-essential python3-pip curl rsync v4l-utils
+python3 -m pip install --upgrade pip
+EOF
+""".replace("__WINDOWS_IP__", quote_for_bash(windows_ip.strip())).replace(
+        "__PROXY_PORT__", quote_for_bash(str(port).strip())
+    )
+
+
 def peripheral_check_command(video_device="/dev/video0"):
     return r"""
 video_device=__VIDEO_DEVICE__
@@ -390,6 +445,13 @@ def tensorrt_command(workdir, onnx_path, engine_path, precision):
     )
 
 
+def tensorrt_benchmark_command(workdir, engine_path):
+    return "set -e; cd {}; trtexec --loadEngine={} --warmUp=200 --duration=10 --useCudaGraph".format(
+        quote_for_bash(workdir.strip() or "."),
+        quote_for_bash(engine_path.strip()),
+    )
+
+
 def rknn_template_command(workdir, model_path, output_path):
     return r"""
 set -e
@@ -409,6 +471,26 @@ printf './rknn_yolov8_demo %s ./test.jpg\n' "$output_path"
 """.replace("__WORKDIR__", quote_for_bash(workdir.strip() or ".")).replace(
         "__MODEL__", quote_for_bash(model_path.strip())
     ).replace("__OUTPUT__", quote_for_bash(output_path.strip()))
+
+
+def rknn_benchmark_template_command(workdir, output_path, test_image):
+    return r"""
+set -e
+workdir=__WORKDIR__
+model_path=__MODEL__
+test_image=__IMAGE__
+cd "$workdir"
+echo "RKNN runtime smoke test template"
+printf 'RKNN model : %s\n' "$model_path"
+printf 'Test image : %s\n' "$test_image"
+echo
+ls -lh "$model_path" "$test_image" 2>/dev/null || true
+echo
+echo "Run the project-specific RKNN demo with the saved model and test image."
+printf 'Example: ./rknn_yolov8_demo %s %s\n' "$model_path" "$test_image"
+""".replace("__WORKDIR__", quote_for_bash(workdir.strip() or ".")).replace(
+        "__MODEL__", quote_for_bash(output_path.strip())
+    ).replace("__IMAGE__", quote_for_bash(test_image.strip() or "test.jpg"))
 
 
 def health_report_section_command():

@@ -48,6 +48,17 @@ class RemoteOpsServiceTest(unittest.TestCase):
         self.assertIn("printf 'Input model: %s", command)
         self.assertNotIn('echo "Input model: models/source', command)
 
+    def test_device_init_advice_is_read_only(self):
+        command = remote_ops_service.device_init_advice_command("192.168.1.11", 7897)
+        self.assertIn("Device initialization checklist", command)
+        self.assertIn("Suggested install commands", command)
+        self.assertIn("cat <<'EOF'", command)
+
+    def test_tensorrt_benchmark_loads_existing_engine(self):
+        command = remote_ops_service.tensorrt_benchmark_command("/tmp/demo", "model.engine")
+        self.assertIn("--loadEngine=", command)
+        self.assertIn("--duration=10", command)
+
 
 if __name__ == "__main__":
     unittest.main()

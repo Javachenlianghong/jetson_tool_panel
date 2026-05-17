@@ -25,6 +25,7 @@ class ProjectConfigStoreTest(unittest.TestCase):
             self.assertTrue(store.path.exists())
             self.assertEqual(store.active_device()["ssh"], "jetson@192.168.55.1")
             self.assertEqual(store.active_project()["remote_root"], "/home/jetson/project")
+            self.assertIn("/home/jetson/project", store.active_project()["file_bookmarks"])
 
     def test_upserts_device_and_project(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -77,6 +78,7 @@ class ProjectConfigStoreTest(unittest.TestCase):
             saved = config_path.read_text(encoding="utf-8")
             self.assertEqual(store.active_device()["name"], "dev")
             self.assertTrue(store.projects())
+            self.assertIsInstance(store.active_project()["file_bookmarks"], list)
             self.assertIn('"active_device_id": "dev"', saved)
             self.assertIn('"projects"', saved)
 

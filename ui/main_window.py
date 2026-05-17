@@ -162,6 +162,7 @@ class JetsonControlPanel(QMainWindow):
         self.network_proxy_port_edit = None
         self.video_device_edit = None
         self.remote_file_path_edit = None
+        self.remote_path_bookmark_combo = None
         self.local_file_path_edit = None
         self.service_name_edit = None
         self.model_workdir_edit = None
@@ -791,6 +792,7 @@ class JetsonControlPanel(QMainWindow):
         self._load_project_config_to_form(project)
         self._load_device_config_to_form(device, project)
         self._refresh_workbench()
+        self._refresh_remote_path_bookmarks()
 
     def _apply_first_model_profile(self, project):
         profiles = project.get("model_profiles", []) if isinstance(project, dict) else []
@@ -852,6 +854,38 @@ class JetsonControlPanel(QMainWindow):
         }
         for key, label in self.workbench_labels.items():
             label.setText(values.get(key, "-"))
+
+    def _remote_path_bookmarks(self):
+        project = self._current_project()
+        bookmarks = project.get("file_bookmarks", []) if isinstance(project, dict) else []
+        if not isinstance(bookmarks, list):
+            bookmarks = []
+
+        defaults = [
+            project.get("remote_root", "") if isinstance(project, dict) else "",
+            "/home/jetson",
+            "/tmp",
+        ]
+        seen = set()
+        result = []
+        for path in bookmarks + defaults:
+            path = str(path or "").strip()
+            if path and path not in seen:
+                seen.add(path)
+                result.append(path)
+        return result
+
+    def _refresh_remote_path_bookmarks(self):
+        if not self.remote_path_bookmark_combo:
+            return
+        current = self.remote_path_bookmark_combo.currentText()
+        self.remote_path_bookmark_combo.blockSignals(True)
+        self.remote_path_bookmark_combo.clear()
+        for path in self._remote_path_bookmarks():
+            self.remote_path_bookmark_combo.addItem(path)
+        self.remote_path_bookmark_combo.blockSignals(False)
+        if current:
+            self._set_combo_text(self.remote_path_bookmark_combo, current)
 
     def _persist_active_config_from_forms(self):
         if not self.remote_edit or not self.remote_path_edit:
@@ -1405,6 +1439,15 @@ class JetsonControlPanel(QMainWindow):
     def run_environment_check(self):
         self._run_jetson_command("开发环境检查", remote_ops_service.environment_check_command())
 
+    def run_device_init_advice(self):
+        self._run_jetson_command(
+            "设备初始化检查",
+            remote_ops_service.device_init_advice_command(
+                self.network_windows_ip_edit.text() if self.network_windows_ip_edit else self.ip_combo.currentText(),
+                self.network_proxy_port_edit.text() if self.network_proxy_port_edit else self.port_spin.value(),
+            ),
+        )
+
     def run_peripheral_check(self):
         self._run_jetson_command(
             "外设检测",
@@ -1416,6 +1459,59 @@ class JetsonControlPanel(QMainWindow):
             "列出远程文件",
             remote_ops_service.file_list_command(self.remote_file_path_edit.text()),
         )
+
+    def apply_remote_path_bookmark(self):
+        if not self.remote_path_bookmark_combo or not self.remote_file_path_edit:
+            return
+        path = self.remote_path_bookmark_combo.currentText().strip()
+        if path:
+            self.remote_file_path_edit.setText(path)
+
+    def save_remote_path_bookmark(self):
+        if not self.remote_file_path_edit:
+            return
+        remote_path = self.remote_file_path_edit.text().strip()
+        if not remote_path:
+            QMessageBox.warning(self, "缺少远端路径", "请先填写要收藏的远端路径。")
+            return
+        reason = remote_ops_service.remote_path_refusal_reason(remote_path)
+        if reason:
+            QMessageBox.warning(self, "远端路径不安全", "拒绝收藏该路径。\n\n{}\n{}".format(remote_path, reason))
+            return
+        project = self._current_project()
+        if not project.get("id"):
+            QMessageBox.warning(self, "缺少项目", "请先选择或保存一个项目。")
+            return
+        bookmarks = self._remote_path_bookmarks()
+        if remote_path not in bookmarks:
+            bookmarks.insert(0, remote_path)
+        project_payload = dict(project)
+        project_payload["file_bookmarks"] = bookmarks[:20]
+        self.config_store.upsert_project(project_payload)
+        self._refresh_remote_path_bookmarks()
+        self._set_combo_text(self.remote_path_bookmark_combo, remote_path)
+        self._append_log("已保存远端路径收藏: " + remote_path)
+
+    def delete_remote_path_bookmark(self):
+        if not self.remote_path_bookmark_combo:
+            return
+        remote_path = self.remote_path_bookmark_combo.currentText().strip()
+        if not remote_path:
+            return
+        project = self._current_project()
+        explicit = [str(path).strip() for path in project.get("file_bookmarks", []) if str(path).strip()]
+        if remote_path not in explicit:
+            QMessageBox.information(self, "默认路径", "该路径来自项目默认值，不需要删除。")
+            return
+        bookmarks = [
+            path for path in explicit
+            if path != remote_path
+        ]
+        project_payload = dict(project)
+        project_payload["file_bookmarks"] = bookmarks
+        self.config_store.upsert_project(project_payload)
+        self._refresh_remote_path_bookmarks()
+        self._append_log("已删除远端路径收藏: " + remote_path)
 
     def mkdir_remote_path(self):
         remote_path = self.remote_file_path_edit.text().strip()
@@ -1527,6 +1623,25 @@ class JetsonControlPanel(QMainWindow):
 
     def run_tensorrt_conversion(self):
         self._run_jetson_command("TensorRT 模型转换", self._current_tensorrt_command())
+
+    def run_model_benchmark(self):
+        output = self.model_output_edit.text().strip()
+        if not output:
+            QMessageBox.warning(self, "缺少模型输出文件", "请先填写 engine 或 rknn 输出文件。")
+            return
+        if output.lower().endswith(".rknn"):
+            command = remote_ops_service.rknn_benchmark_template_command(
+                self.model_workdir_edit.text(),
+                output,
+                self.model_test_image_edit.text(),
+            )
+            self._run_jetson_command("RKNN 运行模板", command)
+            return
+        command = remote_ops_service.tensorrt_benchmark_command(
+            self.model_workdir_edit.text(),
+            output,
+        )
+        self._run_jetson_command("TensorRT Benchmark", command)
 
     def show_rknn_template(self):
         self._run_jetson_command(

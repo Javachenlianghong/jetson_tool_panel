@@ -42,6 +42,11 @@ def default_project_config(defaults, paths):
                 "run_command": "python3 detect.py",
                 "stop_pattern": "detect.py",
                 "log_target": "run-control.log",
+                "file_bookmarks": [
+                    defaults.remote_path,
+                    "/home/jetson",
+                    "/tmp",
+                ],
                 "model_profiles": [
                     {
                         "id": "default-model",
@@ -119,7 +124,12 @@ class ProjectConfigStore:
             project.setdefault("run_command", "python3 detect.py")
             project.setdefault("stop_pattern", "detect.py")
             project.setdefault("log_target", "run-control.log")
+            project.setdefault("file_bookmarks", [])
+            if not isinstance(project["file_bookmarks"], list):
+                project["file_bookmarks"] = []
             project.setdefault("model_profiles", [])
+            if not isinstance(project["model_profiles"], list):
+                project["model_profiles"] = []
 
         if not self.get_device(self.data.get("active_device_id")):
             self.data["active_device_id"] = first_device_id
