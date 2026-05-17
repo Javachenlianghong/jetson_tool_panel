@@ -2,6 +2,8 @@
 
 Windows 上使用的 PyQt5 小工具，用来管理 Jetson 开发流程中的常用操作。
 
+界面采用简约侧边栏工作台布局：左侧导航切换 `代理`、`项目传输`、`显示设置`、`命令参考`，右侧顶部显示 SSH、代理和显示状态，底部日志区始终可见。
+
 ## 功能
 
 - 开放 Windows Clash Verge 局域网代理端口
@@ -79,6 +81,8 @@ cd .\jetson_tool_panel
 jetson_tool_panel/dist/JetsonToolPanel.exe
 ```
 
+修改 UI 后，旧的 `dist/JetsonToolPanel.exe` 不会自动更新；需要重新运行 `build-exe.bat` 才能把新界面打进 EXE。
+
 打包使用 PyInstaller。当前开发环境是 Python 3.7，因此构建依赖固定为 PyInstaller 5.x：
 
 ```text
@@ -99,7 +103,7 @@ jetson/
 
 1. 启动 Clash Verge，并确认端口，例如 `7897`。
 2. 在 `代理` 页点击 `管理员窗口启用`，放行 Windows 防火墙。
-3. 在 `项目传输` 页填写 Jetson SSH，例如 `jetson@192.168.1.13`。
+3. 在 `代理` 工作台的 `Jetson SSH` 面板填写 Jetson SSH，例如 `jetson@192.168.1.13`。
 4. 第一次使用先点击 `配置 SSH Key`。
 5. 点击 `测试 SSH`，确认免密登录可用。
 6. 点击 `上传代理脚本`，把代理脚本放到 Jetson 的 home 目录。
@@ -109,7 +113,14 @@ jetson/
 source ./jetson-proxy-session.sh 192.168.1.11 7897
 ```
 
-8. 使用 `同步到 Jetson` 或 `从 Jetson 拉取项目` 管理代码。
+8. 在 `代理` 工作台或 `项目传输` 页使用 `同步到 Jetson`、`从 Jetson 拉取项目` 管理代码。
+
+## 界面布局
+
+- 左侧导航栏：固定入口，快速切换代理、项目传输、显示设置和命令参考。
+- 顶部状态条：显示 SSH 连接、代理状态和显示状态，只作为提示，不改变命令行为。
+- 工作台面板：默认 `代理` 页集中放置代理配置、Jetson SSH 和项目同步。
+- 底部日志：所有命令输出统一显示，便于排查 SSH、SCP、PowerShell 和 xrandr 问题。
 
 ## 显示分辨率
 

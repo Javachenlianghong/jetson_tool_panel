@@ -22,8 +22,8 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -32,8 +32,9 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QPlainTextEdit,
     QSizePolicy,
+    QStackedWidget,
     QSpinBox,
-    QTabWidget,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -245,9 +246,14 @@ class JetsonControlPanel(QMainWindow):
         self.log_edit = None
         self.stop_button = None
         self.command_buttons = []
+        self.nav_buttons = []
+        self.page_stack = None
+        self.current_command_title = None
+        self.status_labels = {}
+        self.status_dots = {}
 
         self.setWindowTitle("Jetson 工具面板")
-        self.resize(980, 720)
+        self.resize(1080, 760)
         self._build_ui()
         self._apply_style()
         self.refresh_ips()
@@ -256,24 +262,38 @@ class JetsonControlPanel(QMainWindow):
 
     def _build_ui(self):
         central = QWidget()
-        root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(18, 18, 18, 18)
-        root_layout.setSpacing(12)
+        root_layout = QHBoxLayout(central)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
+        root_layout.addWidget(self._build_sidebar())
+
+        main = QWidget()
+        main.setObjectName("MainSurface")
+        main_layout = QVBoxLayout(main)
+        main_layout.setContentsMargins(18, 16, 18, 16)
+        main_layout.setSpacing(12)
+
+        header_layout = QHBoxLayout()
+        header_text = QVBoxLayout()
+        header_text.setSpacing(2)
         title = QLabel("Jetson 工具面板")
         title.setObjectName("Title")
-        subtitle = QLabel("管理 Windows Clash 代理、Jetson SSH 连接、项目拉取和同步。")
+        subtitle = QLabel("Windows Clash 代理、Jetson SSH、项目同步与显示设置。")
         subtitle.setObjectName("Subtitle")
+        header_text.addWidget(title)
+        header_text.addWidget(subtitle)
+        header_layout.addLayout(header_text, 1)
+        header_layout.addWidget(self._build_status_strip(), 2)
+        main_layout.addLayout(header_layout)
 
-        root_layout.addWidget(title)
-        root_layout.addWidget(subtitle)
-
-        tabs = QTabWidget()
-        tabs.addTab(self._build_proxy_tab(), "代理")
-        tabs.addTab(self._build_transfer_tab(), "项目传输")
-        tabs.addTab(self._build_resolution_tab(), "显示设置")
-        tabs.addTab(self._build_help_tab(), "命令参考")
-        root_layout.addWidget(tabs, 1)
+        self.page_stack = QStackedWidget()
+        self.page_stack.setObjectName("PageStack")
+        self.page_stack.addWidget(self._build_proxy_tab())
+        self.page_stack.addWidget(self._build_transfer_tab())
+        self.page_stack.addWidget(self._build_resolution_tab())
+        self.page_stack.addWidget(self._build_help_tab())
+        main_layout.addWidget(self.page_stack, 1)
 
         log_header = QHBoxLayout()
         log_title = QLabel("日志")
@@ -287,7 +307,7 @@ class JetsonControlPanel(QMainWindow):
         log_header.addStretch(1)
         log_header.addWidget(clear_button)
         log_header.addWidget(self.stop_button)
-        root_layout.addLayout(log_header)
+        main_layout.addLayout(log_header)
 
         self.log_edit = QPlainTextEdit()
         self.log_edit.setReadOnly(True)
@@ -296,20 +316,163 @@ class JetsonControlPanel(QMainWindow):
         log_font.setStyleHint(QFont.Monospace)
         log_font.setPointSize(10)
         self.log_edit.setFont(log_font)
-        root_layout.addWidget(self.log_edit, 1)
+        self.log_edit.setMinimumHeight(120)
+        self.log_edit.setMaximumHeight(180)
+        main_layout.addWidget(self.log_edit)
 
+        root_layout.addWidget(main, 1)
         self.setCentralWidget(central)
+
+    def _build_sidebar(self):
+        sidebar = QFrame()
+        sidebar.setObjectName("Sidebar")
+        sidebar.setFixedWidth(148)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(12, 14, 12, 14)
+        layout.setSpacing(8)
+
+        brand = QLabel("Jetson")
+        brand.setObjectName("SidebarBrand")
+        product = QLabel("Tool Panel")
+        product.setObjectName("SidebarProduct")
+        layout.addWidget(brand)
+        layout.addWidget(product)
+        layout.addSpacing(14)
+
+        style = self.style()
+        nav_specs = [
+            ("代理", style.standardIcon(QStyle.SP_DriveNetIcon)),
+            ("项目传输", style.standardIcon(QStyle.SP_DirIcon)),
+            ("显示设置", style.standardIcon(QStyle.SP_ComputerIcon)),
+            ("命令参考", style.standardIcon(QStyle.SP_FileDialogInfoView)),
+        ]
+        for index, (text, icon) in enumerate(nav_specs):
+            button = self._build_nav_button(text, icon)
+            button.clicked.connect(lambda checked=False, page=index: self._switch_page(page))
+            self.nav_buttons.append(button)
+            layout.addWidget(button)
+
+        layout.addStretch(1)
+        settings_button = self._build_nav_button("设置", style.standardIcon(QStyle.SP_FileDialogDetailedView))
+        settings_button.setCheckable(False)
+        settings_button.clicked.connect(lambda: self._append_log("设置入口暂未启用；常用设置会自动保存到 settings.ini。"))
+        about_button = self._build_nav_button("关于", style.standardIcon(QStyle.SP_MessageBoxInformation))
+        about_button.setCheckable(False)
+        about_button.clicked.connect(self._show_about)
+        layout.addWidget(settings_button)
+        layout.addWidget(about_button)
+        return sidebar
+
+    def _build_nav_button(self, text, icon=None):
+        button = QPushButton(text)
+        button.setObjectName("NavButton")
+        button.setCheckable(True)
+        button.setMinimumHeight(38)
+        button.setCursor(Qt.PointingHandCursor)
+        if icon is not None:
+            button.setIcon(icon)
+        return button
+
+    def _build_status_strip(self):
+        strip = QWidget()
+        strip.setObjectName("StatusStrip")
+        layout = QHBoxLayout(strip)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        layout.addWidget(self._build_status_card("ssh", "SSH 连接", "未测试", "未连接"))
+        layout.addWidget(self._build_status_card("proxy", "代理状态", "未启用", "等待操作"))
+        layout.addWidget(self._build_status_card("display", "显示状态", "未查询", "DISPLAY :0"))
+        return strip
+
+    def _build_status_card(self, kind, title, value, detail):
+        card = QFrame()
+        card.setObjectName("StatusCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(4)
+
+        title_row = QHBoxLayout()
+        dot = QLabel("●")
+        dot.setObjectName("StatusDot")
+        dot.setProperty("state", "pending")
+        title_label = QLabel(title)
+        title_label.setObjectName("StatusTitle")
+        title_row.addWidget(dot)
+        title_row.addWidget(title_label)
+        title_row.addStretch(1)
+
+        value_label = QLabel(value)
+        value_label.setObjectName("StatusValue")
+        detail_label = QLabel(detail)
+        detail_label.setObjectName("StatusDetail")
+        detail_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        layout.addLayout(title_row)
+        layout.addWidget(value_label)
+        layout.addWidget(detail_label)
+        self.status_dots[kind] = dot
+        self.status_labels[kind] = {
+            "value": value_label,
+            "detail": detail_label,
+        }
+        return card
+
+    def _switch_page(self, index):
+        if not self.page_stack:
+            return
+        if index < 0 or index >= self.page_stack.count():
+            index = 0
+        self.page_stack.setCurrentIndex(index)
+        for button_index, button in enumerate(self.nav_buttons):
+            button.setChecked(button_index == index)
+        self.settings.setValue("window/current_page", index)
+
+    def _update_status(self, kind, state, detail):
+        labels = self.status_labels.get(kind)
+        dot = self.status_dots.get(kind)
+        if not labels or not dot:
+            return
+        labels["value"].setText(state)
+        labels["detail"].setText(detail)
+        dot_state = "ok" if state in ("已连接", "已启用", "已查询", "已设置") else "pending"
+        if "失败" in state or "错误" in state:
+            dot_state = "error"
+        dot.setProperty("state", dot_state)
+        dot.style().unpolish(dot)
+        dot.style().polish(dot)
+
+    def _show_about(self):
+        QMessageBox.information(
+            self,
+            "关于",
+            "Jetson 工具面板\n\n用于管理 Windows 代理、Jetson SSH、项目同步与显示分辨率。",
+        )
+
+    def _bind_line_edits(self, primary, secondary):
+        primary.textChanged.connect(
+            lambda text: secondary.setText(text) if secondary.text() != text else None
+        )
+        secondary.textChanged.connect(
+            lambda text: primary.setText(text) if primary.text() != text else None
+        )
+
+    def _bind_checkboxes(self, primary, secondary):
+        primary.toggled.connect(
+            lambda checked: secondary.setChecked(checked) if secondary.isChecked() != checked else None
+        )
+        secondary.toggled.connect(
+            lambda checked: primary.setChecked(checked) if primary.isChecked() != checked else None
+        )
 
     def _build_proxy_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(4, 12, 4, 4)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
 
-        settings_box = QGroupBox("Windows Clash 代理共享")
-        grid = QGridLayout(settings_box)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
+        proxy_grid = QGridLayout()
+        proxy_grid.setHorizontalSpacing(10)
+        proxy_grid.setVerticalSpacing(10)
 
         self.ip_combo = QComboBox()
         self.ip_combo.setEditable(True)
@@ -325,74 +488,88 @@ class JetsonControlPanel(QMainWindow):
         self.remote_address_edit = QLineEdit("192.168.1.0/24")
         self.clash_program_edit = QLineEdit(DEFAULT_CLASH_PROGRAM)
 
-        browse_button = QPushButton("选择程序")
+        browse_button = QPushButton("浏览")
         browse_button.clicked.connect(self.choose_clash_program)
 
-        grid.addWidget(QLabel("Windows IP"), 0, 0)
-        grid.addWidget(self.ip_combo, 0, 1)
-        grid.addWidget(refresh_ip_button, 0, 2)
-        grid.addWidget(QLabel("代理端口"), 1, 0)
-        grid.addWidget(self.port_spin, 1, 1)
-        grid.addWidget(QLabel("允许访问网段"), 2, 0)
-        grid.addWidget(self.remote_address_edit, 2, 1, 1, 2)
-        grid.addWidget(QLabel("Clash 程序路径"), 3, 0)
-        grid.addWidget(self.clash_program_edit, 3, 1)
-        grid.addWidget(browse_button, 3, 2)
-        grid.setColumnStretch(1, 1)
+        proxy_grid.addWidget(QLabel("Windows IP"), 0, 0)
+        proxy_grid.addWidget(self.ip_combo, 0, 1)
+        proxy_grid.addWidget(QLabel("端口"), 0, 2)
+        proxy_grid.addWidget(self.port_spin, 0, 3)
+        proxy_grid.addWidget(refresh_ip_button, 0, 4)
+        proxy_grid.addWidget(QLabel("允许访问网段"), 1, 0)
+        proxy_grid.addWidget(self.remote_address_edit, 1, 1, 1, 4)
+        proxy_grid.addWidget(QLabel("Clash Verge 程序"), 2, 0)
+        proxy_grid.addWidget(self.clash_program_edit, 2, 1, 1, 3)
+        proxy_grid.addWidget(browse_button, 2, 4)
+        proxy_grid.setColumnStretch(1, 1)
+        proxy_grid.setColumnStretch(3, 1)
 
-        buttons = QHBoxLayout()
-        enable_button = QPushButton("启用临时防火墙规则")
-        enable_button.clicked.connect(self.enable_firewall_rule)
-        elevated_button = QPushButton("管理员窗口启用")
-        elevated_button.clicked.connect(self.enable_firewall_rule_elevated)
-        stop_rule_button = QPushButton("移除防火墙规则")
+        proxy_buttons = QHBoxLayout()
+        enable_button = QPushButton("管理员窗口启用")
+        enable_button.setObjectName("PrimaryButton")
+        enable_button.clicked.connect(self.enable_firewall_rule_elevated)
+        direct_enable_button = QPushButton("直接启用")
+        direct_enable_button.clicked.connect(self.enable_firewall_rule)
+        stop_rule_button = QPushButton("关闭防火墙规则")
         stop_rule_button.clicked.connect(self.remove_firewall_rule)
         copy_button = QPushButton("复制 Jetson 代理命令")
         copy_button.clicked.connect(self.copy_proxy_command)
 
-        for button in (enable_button, elevated_button, stop_rule_button, copy_button):
+        for button in (enable_button, direct_enable_button, stop_rule_button, copy_button):
             self.command_buttons.append(button)
-            buttons.addWidget(button)
-        buttons.addStretch(1)
+            proxy_buttons.addWidget(button)
+        proxy_buttons.addStretch(1)
+        proxy_grid.addLayout(proxy_buttons, 3, 0, 1, 5)
 
-        layout.addWidget(settings_box)
-        layout.addLayout(buttons)
-        layout.addWidget(self._build_note(
-            "说明：防火墙脚本需要管理员权限。若当前窗口不是管理员启动，"
-            "请使用“管理员窗口启用”，然后在 Jetson 终端粘贴复制出来的 source 命令。"
-        ))
-        layout.addStretch(1)
-        return page
+        layout.addWidget(self._build_panel("代理配置（Windows Clash）", proxy_grid))
 
-    def _build_transfer_tab(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(4, 12, 4, 4)
-        layout.setSpacing(14)
-
-        settings_box = QGroupBox("Jetson SSH 与项目路径")
-        grid = QGridLayout(settings_box)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
+        ssh_grid = QGridLayout()
+        ssh_grid.setHorizontalSpacing(10)
+        ssh_grid.setVerticalSpacing(10)
 
         self.remote_edit = QLineEdit(DEFAULT_REMOTE)
+        ssh_browse_button = QPushButton("...")
+        ssh_browse_button.setEnabled(False)
+        ssh_browse_button.setToolTip("SSH 地址直接在输入框中编辑")
+
+        ssh_grid.addWidget(QLabel("SSH 地址"), 0, 0)
+        ssh_grid.addWidget(self.remote_edit, 0, 1)
+        ssh_grid.addWidget(ssh_browse_button, 0, 2)
+        ssh_grid.setColumnStretch(1, 1)
+
+        ssh_buttons = QHBoxLayout()
+        ssh_button = QPushButton("测试 SSH")
+        ssh_button.setObjectName("PrimaryButton")
+        ssh_button.clicked.connect(self.test_ssh)
+        setup_key_button = QPushButton("配置 SSH Key")
+        setup_key_button.clicked.connect(self.configure_ssh_key)
+        upload_proxy_button = QPushButton("上传代理脚本")
+        upload_proxy_button.clicked.connect(self.upload_proxy_script)
+        for button in (ssh_button, setup_key_button, upload_proxy_button):
+            self.command_buttons.append(button)
+            ssh_buttons.addWidget(button)
+        ssh_buttons.addStretch(1)
+        ssh_grid.addLayout(ssh_buttons, 1, 0, 1, 3)
+
+        layout.addWidget(self._build_panel("Jetson SSH", ssh_grid))
+
+        sync_grid = QGridLayout()
+        sync_grid.setHorizontalSpacing(10)
+        sync_grid.setVerticalSpacing(10)
+
         self.remote_path_edit = QLineEdit(DEFAULT_REMOTE_PATH)
         self.local_root_edit = QLineEdit(str(APP_DIR))
 
-        choose_local_button = QPushButton("选择目录")
+        choose_local_button = QPushButton("浏览")
         choose_local_button.clicked.connect(self.choose_local_root)
 
-        grid.addWidget(QLabel("Jetson SSH"), 0, 0)
-        grid.addWidget(self.remote_edit, 0, 1, 1, 2)
-        grid.addWidget(QLabel("Jetson 项目路径"), 1, 0)
-        grid.addWidget(self.remote_path_edit, 1, 1, 1, 2)
-        grid.addWidget(QLabel("Windows 保存目录"), 2, 0)
-        grid.addWidget(self.local_root_edit, 2, 1)
-        grid.addWidget(choose_local_button, 2, 2)
-        grid.setColumnStretch(1, 1)
+        sync_grid.addWidget(QLabel("本地项目根目录"), 0, 0)
+        sync_grid.addWidget(self.local_root_edit, 0, 1)
+        sync_grid.addWidget(choose_local_button, 0, 2)
+        sync_grid.addWidget(QLabel("Jetson 项目路径"), 1, 0)
+        sync_grid.addWidget(self.remote_path_edit, 1, 1, 1, 2)
 
-        option_box = QGroupBox("同步选项")
-        option_layout = QHBoxLayout(option_box)
+        option_layout = QHBoxLayout()
         self.full_sync_check = QCheckBox("完整同步")
         self.dry_run_check = QCheckBox("只预览")
         self.no_delete_check = QCheckBox("不删除远端文件")
@@ -400,44 +577,119 @@ class JetsonControlPanel(QMainWindow):
         option_layout.addWidget(self.dry_run_check)
         option_layout.addWidget(self.no_delete_check)
         option_layout.addStretch(1)
+        sync_grid.addLayout(option_layout, 2, 0, 1, 3)
 
-        buttons = QHBoxLayout()
+        sync_buttons = QHBoxLayout()
+        sync_button = QPushButton("同步到 Jetson")
+        sync_button.setObjectName("PrimaryButton")
+        sync_button.clicked.connect(self.sync_to_jetson)
+        pull_button = QPushButton("从 Jetson 拉取项目")
+        pull_button.clicked.connect(self.pull_from_jetson)
+        init_button = QPushButton("初始化同步状态")
+        init_button.clicked.connect(self.init_sync_state)
+        for button in (sync_button, pull_button, init_button):
+            self.command_buttons.append(button)
+            sync_buttons.addWidget(button)
+        sync_buttons.addStretch(1)
+        sync_grid.addLayout(sync_buttons, 3, 0, 1, 3)
+        sync_grid.setColumnStretch(1, 1)
+
+        layout.addWidget(self._build_panel("项目同步", sync_grid))
+        layout.addWidget(self._build_note("常用配置会自动保存；防火墙脚本需要管理员权限，建议优先使用“管理员窗口启用”。"))
+        layout.addStretch(1)
+        return page
+
+    def _build_transfer_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        settings_grid = QGridLayout()
+        settings_grid.setHorizontalSpacing(10)
+        settings_grid.setVerticalSpacing(10)
+
+        transfer_remote_edit = QLineEdit(self.remote_edit.text())
+        transfer_remote_path_edit = QLineEdit(self.remote_path_edit.text())
+        transfer_local_root_edit = QLineEdit(self.local_root_edit.text())
+        self._bind_line_edits(self.remote_edit, transfer_remote_edit)
+        self._bind_line_edits(self.remote_path_edit, transfer_remote_path_edit)
+        self._bind_line_edits(self.local_root_edit, transfer_local_root_edit)
+
+        choose_local_button = QPushButton("浏览")
+        choose_local_button.clicked.connect(self.choose_local_root)
+
+        settings_grid.addWidget(QLabel("Jetson SSH"), 0, 0)
+        settings_grid.addWidget(transfer_remote_edit, 0, 1, 1, 2)
+        settings_grid.addWidget(QLabel("Jetson 项目路径"), 1, 0)
+        settings_grid.addWidget(transfer_remote_path_edit, 1, 1, 1, 2)
+        settings_grid.addWidget(QLabel("Windows 保存目录"), 2, 0)
+        settings_grid.addWidget(transfer_local_root_edit, 2, 1)
+        settings_grid.addWidget(choose_local_button, 2, 2)
+        settings_grid.setColumnStretch(1, 1)
+        layout.addWidget(self._build_panel("Jetson SSH 与项目路径", settings_grid))
+
+        option_layout = QHBoxLayout()
+        transfer_full_sync_check = QCheckBox("完整同步")
+        transfer_dry_run_check = QCheckBox("只预览")
+        transfer_no_delete_check = QCheckBox("不删除远端文件")
+        transfer_full_sync_check.setChecked(self.full_sync_check.isChecked())
+        transfer_dry_run_check.setChecked(self.dry_run_check.isChecked())
+        transfer_no_delete_check.setChecked(self.no_delete_check.isChecked())
+        self._bind_checkboxes(self.full_sync_check, transfer_full_sync_check)
+        self._bind_checkboxes(self.dry_run_check, transfer_dry_run_check)
+        self._bind_checkboxes(self.no_delete_check, transfer_no_delete_check)
+        option_layout.addWidget(transfer_full_sync_check)
+        option_layout.addWidget(transfer_dry_run_check)
+        option_layout.addWidget(transfer_no_delete_check)
+        option_layout.addStretch(1)
+        layout.addWidget(self._build_panel("同步选项", option_layout))
+
+        buttons_grid = QGridLayout()
+        buttons_grid.setHorizontalSpacing(10)
+        buttons_grid.setVerticalSpacing(10)
+
         ssh_button = QPushButton("测试 SSH")
+        ssh_button.setObjectName("PrimaryButton")
         ssh_button.clicked.connect(self.test_ssh)
         setup_key_button = QPushButton("配置 SSH Key")
         setup_key_button.clicked.connect(self.configure_ssh_key)
         upload_proxy_button = QPushButton("上传代理脚本")
         upload_proxy_button.clicked.connect(self.upload_proxy_script)
+        sync_button = QPushButton("同步到 Jetson")
+        sync_button.setObjectName("PrimaryButton")
+        sync_button.clicked.connect(self.sync_to_jetson)
         pull_button = QPushButton("从 Jetson 拉取项目")
         pull_button.clicked.connect(self.pull_from_jetson)
         init_button = QPushButton("初始化同步状态")
         init_button.clicked.connect(self.init_sync_state)
-        sync_button = QPushButton("同步到 Jetson")
-        sync_button.clicked.connect(self.sync_to_jetson)
 
-        for button in (ssh_button, setup_key_button, upload_proxy_button, pull_button, init_button, sync_button):
+        transfer_buttons = [
+            ssh_button,
+            setup_key_button,
+            upload_proxy_button,
+            sync_button,
+            pull_button,
+            init_button,
+        ]
+        for index, button in enumerate(transfer_buttons):
             self.command_buttons.append(button)
-            buttons.addWidget(button)
-        buttons.addStretch(1)
-
-        layout.addWidget(settings_box)
-        layout.addWidget(option_box)
-        layout.addLayout(buttons)
-        layout.addWidget(self._build_note(
-            "说明：拉取会执行 scp -r，把 Jetson 上的项目目录复制到 Windows 保存目录；"
-            "同步到 Jetson 使用项目内已有的 sync-to-jetson.py。"
-        ))
+            buttons_grid.addWidget(button, index // 3, index % 3)
+        buttons_grid.setColumnStretch(0, 1)
+        buttons_grid.setColumnStretch(1, 1)
+        buttons_grid.setColumnStretch(2, 1)
+        layout.addWidget(self._build_panel("快速操作", buttons_grid))
+        layout.addWidget(self._build_note("此页配置会与“代理”工作台中的 Jetson SSH 和项目同步面板保持同步。"))
         layout.addStretch(1)
         return page
 
     def _build_resolution_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(4, 12, 4, 4)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
 
-        settings_box = QGroupBox("Jetson 显示分辨率")
-        grid = QGridLayout(settings_box)
+        grid = QGridLayout()
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(10)
 
@@ -498,8 +750,8 @@ class JetsonControlPanel(QMainWindow):
             buttons.addWidget(button)
         buttons.addStretch(1)
 
-        layout.addWidget(settings_box)
-        layout.addLayout(buttons)
+        grid.addLayout(buttons, 7, 0, 1, 3)
+        layout.addWidget(self._build_panel("Jetson 显示分辨率", grid))
         layout.addWidget(self._build_note(
             "说明：此功能通过 SSH 在 Jetson 的当前图形会话里执行 xrandr。"
             "设置通常只对当前桌面会话生效；如果 Jetson 没有启动桌面、使用 Wayland，"
@@ -511,10 +763,11 @@ class JetsonControlPanel(QMainWindow):
     def _build_help_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(4, 12, 4, 4)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
         text = QPlainTextEdit()
+        text.setObjectName("ReferenceText")
         text.setReadOnly(True)
         text.setPlainText(
             "常用命令参考\n\n"
@@ -539,8 +792,23 @@ class JetsonControlPanel(QMainWindow):
             "   py -3 .\\YoloV8-TensorRT-Jetson_Nano\\sync-to-jetson.py\n"
         )
         text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(text)
+        ref_layout = QVBoxLayout()
+        ref_layout.addWidget(text)
+        layout.addWidget(self._build_panel("命令参考", ref_layout), 1)
         return page
+
+    def _build_panel(self, title, content_layout):
+        panel = QFrame()
+        panel.setObjectName("Panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(14, 12, 14, 14)
+        layout.setSpacing(10)
+
+        title_label = QLabel(title)
+        title_label.setObjectName("PanelTitle")
+        layout.addWidget(title_label)
+        layout.addLayout(content_layout)
+        return panel
 
     def _build_note(self, content):
         note = QLabel(content)
@@ -552,88 +820,153 @@ class JetsonControlPanel(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow {
-                background: #f5f7fb;
+                background: #f4f6fa;
+            }
+            QWidget#MainSurface {
+                background: #f4f6fa;
+            }
+            QFrame#Sidebar {
+                background: #ffffff;
+                border-right: 1px solid #dde3ec;
+            }
+            QLabel#SidebarBrand {
+                color: #172033;
+                font-size: 18px;
+                font-weight: 700;
+            }
+            QLabel#SidebarProduct {
+                color: #667085;
+                font-size: 12px;
             }
             QLabel#Title {
-                color: #152238;
-                font-size: 24px;
+                color: #172033;
+                font-size: 23px;
                 font-weight: 700;
             }
             QLabel#Subtitle {
-                color: #526070;
+                color: #667085;
                 font-size: 13px;
             }
             QLabel#SectionTitle {
-                color: #152238;
+                color: #172033;
                 font-size: 15px;
                 font-weight: 700;
             }
-            QGroupBox {
-                background: #ffffff;
-                border: 1px solid #d8dee8;
-                border-radius: 8px;
-                color: #152238;
+            QLabel#PanelTitle {
+                color: #172033;
+                font-size: 14px;
                 font-weight: 700;
-                margin-top: 12px;
-                padding: 12px;
             }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 6px;
+            QLabel#PanelLead {
+                color: #172033;
+                font-size: 14px;
+                font-weight: 700;
+            }
+            QLabel#MutedText {
+                color: #667085;
+                font-size: 12px;
+            }
+            QFrame#Panel {
+                background: #ffffff;
+                border: 1px solid #dde3ec;
+                border-radius: 8px;
+            }
+            QFrame#StatusCard {
+                background: #ffffff;
+                border: 1px solid #dde3ec;
+                border-radius: 8px;
+            }
+            QLabel#StatusTitle {
+                color: #667085;
+                font-size: 11px;
+            }
+            QLabel#StatusValue {
+                color: #172033;
+                font-size: 13px;
+                font-weight: 700;
+            }
+            QLabel#StatusDetail {
+                color: #667085;
+                font-size: 11px;
+            }
+            QLabel#StatusDot {
+                color: #a6b0c0;
+                font-size: 12px;
+            }
+            QLabel#StatusDot[state="ok"] {
+                color: #16a34a;
+            }
+            QLabel#StatusDot[state="error"] {
+                color: #dc2626;
             }
             QLineEdit, QComboBox, QSpinBox, QPlainTextEdit {
                 background: #ffffff;
-                border: 1px solid #cfd7e3;
+                border: 1px solid #d4dbe7;
                 border-radius: 6px;
-                color: #1f2937;
+                color: #172033;
                 padding: 7px;
-                selection-background-color: #2f6fed;
+                selection-background-color: #2563eb;
+            }
+            QPlainTextEdit {
+                background: #fbfcfe;
+            }
+            QPlainTextEdit#ReferenceText {
+                background: #fbfcfe;
+                border-color: #dde3ec;
             }
             QPushButton {
                 background: #ffffff;
-                border: 1px solid #c8d1df;
+                border: 1px solid #ccd5e2;
                 border-radius: 6px;
-                color: #152238;
-                min-height: 30px;
+                color: #172033;
+                min-height: 28px;
                 padding: 6px 12px;
             }
             QPushButton:hover {
-                background: #edf4ff;
-                border-color: #8db6ff;
+                background: #f3f7ff;
+                border-color: #93b4f7;
             }
             QPushButton:pressed {
-                background: #dceaff;
+                background: #e8f0ff;
             }
             QPushButton:disabled {
-                background: #edf0f4;
-                color: #8a95a3;
+                background: #edf1f6;
+                color: #98a2b3;
                 border-color: #d8dee8;
             }
-            QTabWidget::pane {
-                border: 1px solid #d8dee8;
+            QPushButton#PrimaryButton {
+                background: #2563eb;
+                border-color: #2563eb;
+                color: #ffffff;
+                font-weight: 700;
+            }
+            QPushButton#PrimaryButton:hover {
+                background: #1d4ed8;
+                border-color: #1d4ed8;
+            }
+            QPushButton#NavButton {
+                background: transparent;
+                border: 1px solid transparent;
                 border-radius: 8px;
-                background: #ffffff;
+                color: #465568;
+                padding: 8px 10px;
+                text-align: left;
             }
-            QTabBar::tab {
-                background: #edf0f4;
-                border: 1px solid #d8dee8;
-                border-bottom: none;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                color: #39495c;
-                padding: 8px 18px;
+            QPushButton#NavButton:hover {
+                background: #f4f7fb;
+                border-color: #e5ebf3;
             }
-            QTabBar::tab:selected {
-                background: #ffffff;
-                color: #152238;
+            QPushButton#NavButton:checked {
+                background: #eff6ff;
+                border-color: #bfdbfe;
+                color: #2563eb;
                 font-weight: 700;
             }
             QLabel#Note {
-                background: #eef5ff;
-                border: 1px solid #cfe1ff;
+                background: #f8fbff;
+                border: 1px solid #dbeafe;
                 border-radius: 6px;
-                color: #344256;
+                color: #465568;
                 padding: 10px;
             }
             """
@@ -721,9 +1054,11 @@ class JetsonControlPanel(QMainWindow):
         self.framebuffer_fallback_check.setChecked(
             settings_bool(self.settings.value("display/framebuffer_fallback"), True)
         )
+        self._switch_page(self._setting_int("window/current_page", 0))
 
     def _save_settings(self):
         self.settings.setValue("window/geometry", self.saveGeometry())
+        self.settings.setValue("window/current_page", self.page_stack.currentIndex() if self.page_stack else 0)
 
         self.settings.setValue("proxy/windows_ip", self.ip_combo.currentText().strip())
         self.settings.setValue("proxy/port", self.port_spin.value())
@@ -774,6 +1109,7 @@ class JetsonControlPanel(QMainWindow):
         self._append_log("开始: " + title)
         self._append_log("+ " + format_command(command))
         self._set_running(True)
+        self.current_command_title = title
 
         self.worker = CommandWorker(command, cwd=cwd, parent=self)
         self.worker.output.connect(self._append_log)
@@ -786,11 +1122,29 @@ class JetsonControlPanel(QMainWindow):
         self._set_running(False)
 
     def _command_finished(self, return_code):
+        title = self.current_command_title or ""
         if return_code == 0:
             self._append_log("命令完成。")
+            self._handle_command_success(title)
         else:
             self._append_log("命令失败，退出码: {}".format(return_code))
         self._set_running(False)
+        self.current_command_title = None
+
+    def _handle_command_success(self, title):
+        if title == "测试 SSH":
+            self._update_status("ssh", "已连接", self.remote_edit.text().strip())
+        elif title in ("启用临时防火墙规则", "以管理员窗口启用防火墙规则"):
+            detail = "{}:{}".format(self.ip_combo.currentText().strip(), self.port_spin.value())
+            self._update_status("proxy", "已启用", detail)
+        elif title == "移除临时防火墙规则":
+            self._update_status("proxy", "未启用", "规则已移除")
+        elif title == "查询 Jetson 显示器":
+            self._update_status("display", "已查询", "DISPLAY {}".format(self.display_env_edit.text().strip() or ":0"))
+        elif title == "设置 Jetson 分辨率":
+            self._update_status("display", "已设置", self.resolution_combo.currentText().strip())
+        elif title == "恢复 Jetson 显示自动模式":
+            self._update_status("display", "已设置", "自动模式")
 
     def stop_current_command(self):
         if self.worker and self.worker.isRunning():
