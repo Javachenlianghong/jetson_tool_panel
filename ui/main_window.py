@@ -14,6 +14,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from PyQt5.QtCore import QSettings, QThread, Qt, pyqtSignal
 from PyQt5.QtGui import QFont
@@ -38,6 +39,12 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from ui.pages.common import build_note, build_panel
+from ui.pages.display_page import build_display_page
+from ui.pages.help_page import build_help_page
+from ui.pages.proxy_page import build_proxy_page
+from ui.pages.transfer_page import build_transfer_page
 
 
 IS_FROZEN = getattr(sys, "frozen", False)
@@ -251,6 +258,13 @@ class JetsonControlPanel(QMainWindow):
         self.current_command_title = None
         self.status_labels = {}
         self.status_dots = {}
+        self.defaults = SimpleNamespace(
+            proxy_port=DEFAULT_PROXY_PORT,
+            remote=DEFAULT_REMOTE,
+            remote_path=DEFAULT_REMOTE_PATH,
+            clash_program=DEFAULT_CLASH_PROGRAM,
+        )
+        self.paths = SimpleNamespace(app_dir=APP_DIR)
 
         self.setWindowTitle("Jetson 工具面板")
         self.resize(1080, 760)
@@ -815,6 +829,24 @@ class JetsonControlPanel(QMainWindow):
         note.setWordWrap(True)
         note.setObjectName("Note")
         return note
+
+    def _build_proxy_tab(self):
+        return build_proxy_page(self)
+
+    def _build_transfer_tab(self):
+        return build_transfer_page(self)
+
+    def _build_resolution_tab(self):
+        return build_display_page(self)
+
+    def _build_help_tab(self):
+        return build_help_page(self)
+
+    def _build_panel(self, title, content_layout):
+        return build_panel(title, content_layout)
+
+    def _build_note(self, content):
+        return build_note(content)
 
     def _apply_style(self):
         self.setStyleSheet(
