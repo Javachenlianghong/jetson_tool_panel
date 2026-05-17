@@ -3,7 +3,6 @@
 """Main window for Jetson Tool Panel."""
 
 import base64
-import json
 import os
 import socket
 import subprocess
@@ -358,7 +357,7 @@ class JetsonControlPanel(QMainWindow):
 
         settings_button = self._build_nav_button("设置", style.standardIcon(QStyle.SP_FileDialogDetailedView))
         settings_button.setCheckable(False)
-        settings_button.clicked.connect(lambda: self._append_log("设置入口暂未启用；常用设置会自动保存到 settings.ini。"))
+        settings_button.clicked.connect(self._show_settings_info)
         about_button = self._build_nav_button("关于", style.standardIcon(QStyle.SP_MessageBoxInformation))
         about_button.setCheckable(False)
         about_button.clicked.connect(self._show_about)
@@ -449,6 +448,21 @@ class JetsonControlPanel(QMainWindow):
             self,
             "关于",
             "Jetson 工具面板\n\n用于管理 Windows 代理、Jetson SSH、项目同步与显示分辨率。",
+        )
+
+    def _show_settings_info(self):
+        QMessageBox.information(
+            self,
+            "设置与数据位置",
+            "\n".join([
+                "常用配置会自动保存。",
+                "",
+                "基础设置: {}".format(self.paths.config_path),
+                "项目配置: {}".format(self.paths.project_config_path),
+                "任务历史: {}".format(self.paths.task_history_path),
+                "工具目录: {}".format(self.paths.tool_dir),
+                "工作目录: {}".format(self.paths.app_dir),
+            ]),
         )
 
     def _bind_line_edits(self, primary, secondary):
@@ -1242,18 +1256,26 @@ class JetsonControlPanel(QMainWindow):
 
     def workflow_build(self):
         project = self._current_project()
+        build_command_text = str(project.get("build_command") or self.project_build_command_edit.text()).strip()
+        if not build_command_text:
+            QMessageBox.warning(self, "缺少构建命令", "请先在项目配置里填写构建命令。")
+            return
         command = remote_ops_service.run_program_command(
             project.get("remote_root", self.remote_path_edit.text().strip()),
-            project.get("build_command", self.project_build_command_edit.text().strip() or "true"),
+            build_command_text,
             background=False,
         )
         self._start_workflow([self._remote_command_for_project("项目构建", command)])
 
     def workflow_run(self):
         project = self._current_project()
+        run_command_text = str(project.get("run_command") or self.run_command_edit.text()).strip()
+        if not run_command_text:
+            QMessageBox.warning(self, "缺少启动命令", "请先在项目配置或运行控制页填写启动命令。")
+            return
         command = remote_ops_service.run_program_command(
             project.get("remote_root", self.remote_path_edit.text().strip()),
-            project.get("run_command", self.run_command_edit.text().strip()),
+            run_command_text,
             background=True,
         )
         self._start_workflow([self._remote_command_for_project("项目后台运行", command)])
@@ -1287,14 +1309,22 @@ class JetsonControlPanel(QMainWindow):
             QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(self.paths.sync_script))
             return
         project = self._current_project()
+        build_command_text = str(project.get("build_command") or self.project_build_command_edit.text()).strip()
+        run_command_text = str(project.get("run_command") or self.run_command_edit.text()).strip()
+        if not build_command_text:
+            QMessageBox.warning(self, "缺少构建命令", "请先在项目配置里填写构建命令。")
+            return
+        if not run_command_text:
+            QMessageBox.warning(self, "缺少启动命令", "请先在项目配置或运行控制页填写启动命令。")
+            return
         build_command = remote_ops_service.run_program_command(
             project.get("remote_root", self.remote_path_edit.text().strip()),
-            project.get("build_command", self.project_build_command_edit.text().strip() or "true"),
+            build_command_text,
             background=False,
         )
         run_command = remote_ops_service.run_program_command(
             project.get("remote_root", self.remote_path_edit.text().strip()),
-            project.get("run_command", self.run_command_edit.text().strip()),
+            run_command_text,
             background=True,
         )
         steps = [
@@ -1392,12 +1422,20 @@ class JetsonControlPanel(QMainWindow):
         if not remote_path:
             QMessageBox.warning(self, "缺少远端路径", "请填写要创建的远端目录。")
             return
+        reason = remote_ops_service.remote_path_refusal_reason(remote_path)
+        if reason:
+            QMessageBox.warning(self, "远端路径不安全", "拒绝创建该路径。\n\n{}\n{}".format(remote_path, reason))
+            return
         self._run_jetson_command("新建远程目录", remote_ops_service.mkdir_command(remote_path))
 
     def remove_remote_path(self):
         remote_path = self.remote_file_path_edit.text().strip()
         if not remote_path:
             QMessageBox.warning(self, "缺少远端路径", "请填写要删除的远端路径。")
+            return
+        reason = remote_ops_service.remote_path_refusal_reason(remote_path, destructive=True)
+        if reason:
+            QMessageBox.warning(self, "远端路径不安全", "拒绝删除该路径。\n\n{}\n{}".format(remote_path, reason))
             return
         answer = QMessageBox.question(
             self,
@@ -1569,18 +1607,6 @@ class JetsonControlPanel(QMainWindow):
         self.config_store.delete_model_profile(project["id"], profile_id)
         self._apply_active_context_to_forms()
         self._append_log("已删除模型配置。")
-
-    def _device_profiles(self):
-        raw = self.settings.value("devices/profiles", "{}")
-        try:
-            profiles = json.loads(str(raw))
-        except (TypeError, ValueError):
-            profiles = {}
-        return profiles if isinstance(profiles, dict) else {}
-
-    def _write_device_profiles(self, profiles):
-        self.settings.setValue("devices/profiles", json.dumps(profiles, ensure_ascii=False, sort_keys=True))
-        self.settings.sync()
 
     def _refresh_device_profile_combo(self):
         if not self.device_profile_combo:

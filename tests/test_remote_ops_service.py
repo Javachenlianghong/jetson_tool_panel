@@ -19,7 +19,34 @@ class RemoteOpsServiceTest(unittest.TestCase):
     def test_file_remove_refuses_unsafe_paths(self):
         command = remote_ops_service.remove_path_command("/")
         self.assertIn("Refuse to remove unsafe path", command)
+        self.assertNotIn("rm -rf", command)
+
+    def test_file_remove_requires_absolute_non_root_path(self):
+        for unsafe_path in ("~", "$HOME", "/home", "/tmp", "//", "/home/jetson/..", "relative/path"):
+            with self.subTest(path=unsafe_path):
+                command = remote_ops_service.remove_path_command(unsafe_path)
+                self.assertIn("Refuse to remove unsafe path", command)
+                self.assertNotIn("rm -rf", command)
+
+        command = remote_ops_service.remove_path_command("/home/jetson/project/build")
         self.assertIn("rm -rf", command)
+        self.assertIn("/home/jetson/project/build", command)
+
+    def test_mkdir_refuses_empty_and_system_roots(self):
+        command = remote_ops_service.mkdir_command("/home")
+        self.assertIn("Refuse to create unsafe path", command)
+        self.assertNotIn("mkdir -p", command)
+
+    def test_rknn_template_quotes_user_paths(self):
+        command = remote_ops_service.rknn_template_command(
+            "/tmp/demo",
+            "models/source model's.onnx",
+            "output; rm -rf /.rknn",
+        )
+        self.assertIn("model_path=", command)
+        self.assertIn("output_path=", command)
+        self.assertIn("printf 'Input model: %s", command)
+        self.assertNotIn('echo "Input model: models/source', command)
 
 
 if __name__ == "__main__":

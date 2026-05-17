@@ -63,13 +63,15 @@ class ProjectConfigStore:
         self.defaults = defaults
         self.paths = paths
         self.was_created = not self.path.exists()
+        self.needs_save = False
         self.data = self._load()
         self.normalize()
-        if self.was_created:
+        if self.was_created or self.needs_save:
             self.save()
 
     def _load(self):
         if not self.path.exists():
+            self.needs_save = True
             return default_project_config(self.defaults, self.paths)
         try:
             return json.loads(self.path.read_text(encoding="utf-8"))
@@ -79,9 +81,15 @@ class ProjectConfigStore:
                 self.path.replace(backup)
             except OSError:
                 pass
+            self.needs_save = True
             return default_project_config(self.defaults, self.paths)
 
     def normalize(self):
+        try:
+            before = json.dumps(self.data, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            before = None
+
         if not isinstance(self.data, dict):
             self.data = default_project_config(self.defaults, self.paths)
         self.data["version"] = CONFIG_VERSION
@@ -118,6 +126,13 @@ class ProjectConfigStore:
         if not self.get_project(self.data.get("active_project_id")):
             self.data["active_project_id"] = self.data["projects"][0]["id"]
 
+        try:
+            after = json.dumps(self.data, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            after = None
+        if before != after:
+            self.needs_save = True
+
     def migrate_from_qsettings(self, settings):
         if not self.was_created:
             return
@@ -142,6 +157,7 @@ class ProjectConfigStore:
     def save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        self.needs_save = False
 
     def devices(self):
         return self.data.get("devices", [])

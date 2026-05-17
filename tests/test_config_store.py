@@ -53,6 +53,33 @@ class ProjectConfigStoreTest(unittest.TestCase):
             self.assertEqual(store.active_device()["id"], "rk3588")
             self.assertEqual(store.active_project()["run_command"], "./demo")
 
+    def test_recovers_and_saves_malformed_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config" / "projects.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text("{not valid json", encoding="utf-8")
+
+            store = self._store(tmp)
+
+            self.assertTrue(config_path.exists())
+            self.assertTrue(config_path.with_suffix(".json.broken").exists())
+            self.assertEqual(store.active_device()["ssh"], "jetson@192.168.55.1")
+            self.assertIn('"version": 1', config_path.read_text(encoding="utf-8"))
+
+    def test_normalizes_and_saves_partial_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config" / "projects.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text('{"devices": [{"id": "dev"}], "projects": []}', encoding="utf-8")
+
+            store = self._store(tmp)
+
+            saved = config_path.read_text(encoding="utf-8")
+            self.assertEqual(store.active_device()["name"], "dev")
+            self.assertTrue(store.projects())
+            self.assertIn('"active_device_id": "dev"', saved)
+            self.assertIn('"projects"', saved)
+
 
 if __name__ == "__main__":
     unittest.main()

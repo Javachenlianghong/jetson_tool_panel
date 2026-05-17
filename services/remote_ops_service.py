@@ -3,6 +3,86 @@
 from core.command_runner import quote_for_bash
 
 
+PROTECTED_REMOTE_PATHS = {
+    "",
+    "/",
+    ".",
+    "..",
+    "~",
+    "$HOME",
+    "${HOME}",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/home",
+    "/lib",
+    "/lib64",
+    "/media",
+    "/mnt",
+    "/opt",
+    "/proc",
+    "/root",
+    "/run",
+    "/sbin",
+    "/sys",
+    "/tmp",
+    "/usr",
+    "/var",
+}
+
+
+def clean_remote_path(remote_path):
+    return str(remote_path or "").strip()
+
+
+def remote_path_refusal_reason(remote_path, destructive=False):
+    path = clean_remote_path(remote_path)
+    normalized = path.rstrip("/") or "/"
+    if not path:
+        return "Remote path is empty."
+    if "\x00" in path or "\n" in path or "\r" in path:
+        return "Remote path contains unsupported control characters."
+    if any(part == ".." for part in path.split("/")):
+        return "Remote path must not contain '..' segments."
+    if path in PROTECTED_REMOTE_PATHS or normalized in PROTECTED_REMOTE_PATHS:
+        return "Remote path points to a protected system location."
+    if destructive and not path.startswith("/"):
+        return "Destructive file operations require an absolute remote path."
+    return ""
+
+
+def _refuse_remote_path_command(action, remote_path, reason):
+    return (
+        "echo {}; echo {}; exit 2"
+    ).format(
+        quote_for_bash("Refuse to {} unsafe path: {}".format(action, clean_remote_path(remote_path))),
+        quote_for_bash("Reason: {}".format(reason)),
+    )
+
+
+def _remote_path_guard(action, destructive=False):
+    absolute_guard = ""
+    if destructive:
+        absolute_guard = r"""
+case "$path" in
+    /*) ;;
+    *) echo "Refuse to __ACTION__ unsafe path: $path"; echo "Reason: destructive file operations require an absolute remote path."; exit 2 ;;
+esac
+"""
+    return (r"""
+protected=' / . .. ~ $HOME ${HOME} /bin /boot /dev /etc /home /lib /lib64 /media /mnt /opt /proc /root /run /sbin /sys /tmp /usr /var '
+normalized="${path%/}"
+[ -n "$normalized" ] || normalized="/"
+case "$path" in
+    *'/../'*|*'/..'|'../'*|'..') echo "Refuse to __ACTION__ unsafe path: $path"; echo "Reason: remote path must not contain '..' segments."; exit 2 ;;
+esac
+case " $protected " in
+    *" $path "*|*" $normalized "*) echo "Refuse to __ACTION__ unsafe path: $path"; echo "Reason: protected system location."; exit 2 ;;
+esac
+""".replace("__ACTION__", action) + absolute_guard.replace("__ACTION__", action))
+
+
 def run_program_command(workdir, command, background=False):
     workdir = workdir.strip() or "."
     command = command.strip()
@@ -250,22 +330,29 @@ fi
 
 
 def mkdir_command(remote_path):
-    return "mkdir -p {}; echo Created: {}".format(
-        quote_for_bash(remote_path.strip()),
-        quote_for_bash(remote_path.strip()),
-    )
+    path = clean_remote_path(remote_path)
+    reason = remote_path_refusal_reason(path)
+    if reason:
+        return _refuse_remote_path_command("create", path, reason)
+    return r"""
+path=__PATH__
+__GUARD__
+mkdir -p -- "$path"
+echo "Created: $path"
+""".replace("__PATH__", quote_for_bash(path)).replace("__GUARD__", _remote_path_guard("create"))
 
 
 def remove_path_command(remote_path):
+    path = clean_remote_path(remote_path)
+    reason = remote_path_refusal_reason(path, destructive=True)
+    if reason:
+        return _refuse_remote_path_command("remove", path, reason)
     return r"""
 path=__PATH__
-if [ -z "$path" ] || [ "$path" = "/" ] || [ "$path" = "$HOME" ]; then
-    echo "Refuse to remove unsafe path: $path"
-    exit 2
-fi
+__GUARD__
 rm -rf -- "$path"
 echo "Removed: $path"
-""".replace("__PATH__", quote_for_bash(remote_path.strip()))
+""".replace("__PATH__", quote_for_bash(path)).replace("__GUARD__", _remote_path_guard("remove", destructive=True))
 
 
 def service_command(service_name, action):
@@ -306,19 +393,22 @@ def tensorrt_command(workdir, onnx_path, engine_path, precision):
 def rknn_template_command(workdir, model_path, output_path):
     return r"""
 set -e
-cd __WORKDIR__
+workdir=__WORKDIR__
+model_path=__MODEL__
+output_path=__OUTPUT__
+cd "$workdir"
 echo "RKNN deployment template"
-echo "Input model: __MODEL__"
-echo "Output RKNN: __OUTPUT__"
+printf 'Input model: %s\n' "$model_path"
+printf 'Output RKNN: %s\n' "$output_path"
 echo
 echo "Typical conversion runs on an x86 host with rknn-toolkit2 installed."
 echo "Typical runtime test runs on RK3588 with rknn runtime and /dev/rknpu."
 echo
 echo "Suggested runtime command:"
-echo "./rknn_yolov8_demo __OUTPUT__ ./test.jpg"
+printf './rknn_yolov8_demo %s ./test.jpg\n' "$output_path"
 """.replace("__WORKDIR__", quote_for_bash(workdir.strip() or ".")).replace(
-        "__MODEL__", model_path.strip()
-    ).replace("__OUTPUT__", output_path.strip())
+        "__MODEL__", quote_for_bash(model_path.strip())
+    ).replace("__OUTPUT__", quote_for_bash(output_path.strip()))
 
 
 def health_report_section_command():
