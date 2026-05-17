@@ -166,8 +166,11 @@ class JetsonControlPanel(QMainWindow):
         self.local_file_path_edit = None
         self.service_name_edit = None
         self.model_workdir_edit = None
+        self.model_profile_combo = None
+        self.model_name_edit = None
         self.model_source_edit = None
         self.model_output_edit = None
+        self.model_test_image_edit = None
         self.model_precision_combo = None
         self.device_profile_combo = None
         self.device_name_edit = None
@@ -778,10 +781,25 @@ class JetsonControlPanel(QMainWindow):
     def _apply_first_model_profile(self, project):
         profiles = project.get("model_profiles", []) if isinstance(project, dict) else []
         profile = profiles[0] if profiles else {}
+        if self.model_profile_combo:
+            current = self.model_profile_combo.currentData()
+            self.model_profile_combo.blockSignals(True)
+            self.model_profile_combo.clear()
+            for item in profiles:
+                self.model_profile_combo.addItem(item.get("name", item.get("id", "")), item.get("id"))
+            self.model_profile_combo.blockSignals(False)
+            if current:
+                self._set_combo_by_data(self.model_profile_combo, current)
+            elif profile.get("id"):
+                self._set_combo_by_data(self.model_profile_combo, profile.get("id"))
+        if self.model_name_edit:
+            self.model_name_edit.setText(profile.get("name", self.model_name_edit.text() or "Default Model"))
         if self.model_source_edit:
             self.model_source_edit.setText(profile.get("source", self.model_source_edit.text() or "model.onnx"))
         if self.model_output_edit:
             self.model_output_edit.setText(profile.get("output", self.model_output_edit.text() or "model.engine"))
+        if self.model_test_image_edit:
+            self.model_test_image_edit.setText(profile.get("test_image", self.model_test_image_edit.text() or "test.jpg"))
         if self.model_precision_combo:
             self._set_combo_text(self.model_precision_combo, profile.get("precision", "fp16"))
 
@@ -1486,6 +1504,71 @@ class JetsonControlPanel(QMainWindow):
         command = self._current_tensorrt_command()
         QApplication.clipboard().setText(command)
         self._append_log("已复制 TensorRT 命令模板: " + command)
+
+    def _current_model_profile_id(self):
+        return self._combo_current_data(self.model_profile_combo)
+
+    def _model_profile_from_form(self):
+        name = self.model_name_edit.text().strip() if self.model_name_edit else "Model"
+        profile_id = self._current_model_profile_id() or slugify(name, "model")
+        return {
+            "id": profile_id,
+            "name": name,
+            "source": self.model_source_edit.text().strip(),
+            "output": self.model_output_edit.text().strip(),
+            "precision": self.model_precision_combo.currentText().strip(),
+            "test_image": self.model_test_image_edit.text().strip(),
+        }
+
+    def save_model_profile(self):
+        project = self._current_project()
+        if not project.get("id"):
+            QMessageBox.warning(self, "缺少项目", "请先选择或保存一个项目。")
+            return
+        profile = self._model_profile_from_form()
+        if not profile["name"]:
+            QMessageBox.warning(self, "缺少模型名称", "请填写模型名称。")
+            return
+        profile_id = self.config_store.upsert_model_profile(project["id"], profile)
+        self._refresh_config_selectors()
+        self._apply_active_context_to_forms()
+        self._set_combo_by_data(self.model_profile_combo, profile_id)
+        self._append_log("已保存模型配置: " + profile["name"])
+
+    def load_model_profile(self):
+        project = self._current_project()
+        profile_id = self._current_model_profile_id()
+        profile = None
+        for item in project.get("model_profiles", []):
+            if item.get("id") == profile_id:
+                profile = item
+                break
+        if not profile:
+            QMessageBox.warning(self, "找不到模型配置", "请选择要加载的模型配置。")
+            return
+        self.model_name_edit.setText(profile.get("name", ""))
+        self.model_source_edit.setText(profile.get("source", ""))
+        self.model_output_edit.setText(profile.get("output", ""))
+        self.model_test_image_edit.setText(profile.get("test_image", ""))
+        self._set_combo_text(self.model_precision_combo, profile.get("precision", "fp16"))
+
+    def delete_model_profile(self):
+        project = self._current_project()
+        profile_id = self._current_model_profile_id()
+        if not project.get("id") or not profile_id:
+            return
+        answer = QMessageBox.question(
+            self,
+            "确认删除模型配置",
+            "确定删除当前模型配置？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.config_store.delete_model_profile(project["id"], profile_id)
+        self._apply_active_context_to_forms()
+        self._append_log("已删除模型配置。")
 
     def _device_profiles(self):
         raw = self.settings.value("devices/profiles", "{}")
