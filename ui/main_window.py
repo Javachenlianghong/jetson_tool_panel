@@ -37,11 +37,14 @@ from ui.pages.health_page import build_health_page
 from ui.pages.help_page import build_help_page
 from ui.pages.logs_page import build_logs_page
 from ui.pages.environment_page import build_environment_page
+from ui.pages.files_page import build_files_page
 from ui.pages.network_page import build_network_page
+from ui.pages.model_page import build_model_page
 from ui.pages.peripheral_page import build_peripheral_page
 from ui.pages.process_page import build_process_page
 from ui.pages.proxy_page import build_proxy_page
 from ui.pages.runtime_page import build_runtime_page
+from ui.pages.service_page import build_service_page
 from ui.pages.transfer_page import build_transfer_page
 
 
@@ -143,6 +146,13 @@ class JetsonControlPanel(QMainWindow):
         self.network_windows_ip_edit = None
         self.network_proxy_port_edit = None
         self.video_device_edit = None
+        self.remote_file_path_edit = None
+        self.local_file_path_edit = None
+        self.service_name_edit = None
+        self.model_workdir_edit = None
+        self.model_source_edit = None
+        self.model_output_edit = None
+        self.model_precision_combo = None
         self.log_edit = None
         self.stop_button = None
         self.command_buttons = []
@@ -200,6 +210,9 @@ class JetsonControlPanel(QMainWindow):
         self.page_stack.addWidget(build_network_page(self))
         self.page_stack.addWidget(build_environment_page(self))
         self.page_stack.addWidget(build_peripheral_page(self))
+        self.page_stack.addWidget(build_files_page(self))
+        self.page_stack.addWidget(build_service_page(self))
+        self.page_stack.addWidget(build_model_page(self))
         self.page_stack.addWidget(build_health_page(self))
         self.page_stack.addWidget(build_display_page(self))
         self.page_stack.addWidget(build_help_page(self))
@@ -259,6 +272,9 @@ class JetsonControlPanel(QMainWindow):
             ("网络诊断", style.standardIcon(QStyle.SP_DriveNetIcon)),
             ("环境检查", style.standardIcon(QStyle.SP_DialogApplyButton)),
             ("外设检测", style.standardIcon(QStyle.SP_DriveHDIcon)),
+            ("文件管理", style.standardIcon(QStyle.SP_DirOpenIcon)),
+            ("服务管理", style.standardIcon(QStyle.SP_BrowserReload)),
+            ("模型部署", style.standardIcon(QStyle.SP_ArrowForward)),
             ("设备状态", style.standardIcon(QStyle.SP_ComputerIcon)),
             ("显示设置", style.standardIcon(QStyle.SP_ComputerIcon)),
             ("命令参考", style.standardIcon(QStyle.SP_FileDialogInfoView)),
@@ -638,6 +654,13 @@ class JetsonControlPanel(QMainWindow):
         self._set_combo_text(self.log_tail_target_combo, self.settings.value("logs/target", self.log_tail_target_combo.currentText()))
         self.log_tail_lines_spin.setValue(self._setting_int("logs/lines", 120))
         self.video_device_edit.setText(str(self.settings.value("peripheral/video_device", "/dev/video0")))
+        self.remote_file_path_edit.setText(str(self.settings.value("files/remote_path", self.remote_file_path_edit.text())))
+        self.local_file_path_edit.setText(str(self.settings.value("files/local_path", self.local_file_path_edit.text())))
+        self.service_name_edit.setText(str(self.settings.value("service/name", self.service_name_edit.text())))
+        self.model_workdir_edit.setText(str(self.settings.value("model/workdir", self.model_workdir_edit.text())))
+        self.model_source_edit.setText(str(self.settings.value("model/source", self.model_source_edit.text())))
+        self.model_output_edit.setText(str(self.settings.value("model/output", self.model_output_edit.text())))
+        self._set_combo_text(self.model_precision_combo, self.settings.value("model/precision", "fp16"))
         self._switch_page(self._setting_int("window/current_page", 0))
 
     def _save_settings(self):
@@ -671,6 +694,13 @@ class JetsonControlPanel(QMainWindow):
         self.settings.setValue("logs/target", self.log_tail_target_combo.currentText().strip())
         self.settings.setValue("logs/lines", self.log_tail_lines_spin.value())
         self.settings.setValue("peripheral/video_device", self.video_device_edit.text().strip())
+        self.settings.setValue("files/remote_path", self.remote_file_path_edit.text().strip())
+        self.settings.setValue("files/local_path", self.local_file_path_edit.text().strip())
+        self.settings.setValue("service/name", self.service_name_edit.text().strip())
+        self.settings.setValue("model/workdir", self.model_workdir_edit.text().strip())
+        self.settings.setValue("model/source", self.model_source_edit.text().strip())
+        self.settings.setValue("model/output", self.model_output_edit.text().strip())
+        self.settings.setValue("model/precision", self.model_precision_combo.currentText().strip())
         self.settings.sync()
 
     def _sync_default_cidr(self, ip_address):
@@ -937,6 +967,130 @@ class JetsonControlPanel(QMainWindow):
             "外设检测",
             remote_ops_service.peripheral_check_command(self.video_device_edit.text()),
         )
+
+    def list_remote_files(self):
+        self._run_jetson_command(
+            "列出远程文件",
+            remote_ops_service.file_list_command(self.remote_file_path_edit.text()),
+        )
+
+    def mkdir_remote_path(self):
+        remote_path = self.remote_file_path_edit.text().strip()
+        if not remote_path:
+            QMessageBox.warning(self, "缺少远端路径", "请填写要创建的远端目录。")
+            return
+        self._run_jetson_command("新建远程目录", remote_ops_service.mkdir_command(remote_path))
+
+    def remove_remote_path(self):
+        remote_path = self.remote_file_path_edit.text().strip()
+        if not remote_path:
+            QMessageBox.warning(self, "缺少远端路径", "请填写要删除的远端路径。")
+            return
+        answer = QMessageBox.question(
+            self,
+            "确认删除远端路径",
+            "确定递归删除远端路径？\n\n{}".format(remote_path),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self._run_jetson_command("删除远端路径", remote_ops_service.remove_path_command(remote_path))
+
+    def upload_single_file(self):
+        remote = self._remote_or_warn()
+        if not remote:
+            return
+        local_path = self.local_file_path_edit.text().strip()
+        if not local_path or not Path(local_path).is_file():
+            local_path, _ = QFileDialog.getOpenFileName(self, "选择要上传的文件", str(self.paths.app_dir))
+            if not local_path:
+                return
+            self.local_file_path_edit.setText(local_path)
+        remote_path = self.remote_file_path_edit.text().strip()
+        if not remote_path:
+            QMessageBox.warning(self, "缺少远端路径", "请填写上传目标远端路径。")
+            return
+        target = "{}:{}".format(remote, remote_path)
+        self._run_command("上传单文件", ["scp", "-O", local_path, target], cwd=self.paths.app_dir)
+
+    def download_single_file(self):
+        remote = self._remote_or_warn()
+        if not remote:
+            return
+        remote_path = self.remote_file_path_edit.text().strip()
+        if not remote_path:
+            QMessageBox.warning(self, "缺少远端路径", "请填写要下载的远端文件路径。")
+            return
+        local_path = self.local_file_path_edit.text().strip()
+        if not local_path or not Path(local_path).exists():
+            local_path = QFileDialog.getExistingDirectory(self, "选择本地保存目录", str(self.paths.app_dir))
+            if not local_path:
+                return
+            self.local_file_path_edit.setText(local_path)
+        source = "{}:{}".format(remote, remote_path)
+        self._run_command("下载单文件", ["scp", "-O", source, local_path], cwd=self.paths.app_dir)
+
+    def _service_action(self, action, confirm=False):
+        service_name = self.service_name_edit.text().strip()
+        if not service_name:
+            QMessageBox.warning(self, "缺少服务名", "请填写 systemd 服务名。")
+            return
+        if confirm:
+            answer = QMessageBox.question(
+                self,
+                "确认服务操作",
+                "确定对远端服务执行 {}？\n\n{}".format(action, service_name),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+        self._run_jetson_command(
+            "服务{}: {}".format(action, service_name),
+            remote_ops_service.service_command(service_name, action),
+        )
+
+    def service_status(self):
+        self._service_action("status")
+
+    def service_start(self):
+        self._service_action("start", confirm=True)
+
+    def service_stop(self):
+        self._service_action("stop", confirm=True)
+
+    def service_restart(self):
+        self._service_action("restart", confirm=True)
+
+    def service_logs(self):
+        self._service_action("logs")
+
+    def _current_tensorrt_command(self):
+        return remote_ops_service.tensorrt_command(
+            self.model_workdir_edit.text(),
+            self.model_source_edit.text(),
+            self.model_output_edit.text(),
+            self.model_precision_combo.currentText(),
+        )
+
+    def run_tensorrt_conversion(self):
+        self._run_jetson_command("TensorRT 模型转换", self._current_tensorrt_command())
+
+    def show_rknn_template(self):
+        self._run_jetson_command(
+            "显示 RKNN 部署模板",
+            remote_ops_service.rknn_template_command(
+                self.model_workdir_edit.text(),
+                self.model_source_edit.text(),
+                self.model_output_edit.text(),
+            ),
+        )
+
+    def copy_model_command(self):
+        command = self._current_tensorrt_command()
+        QApplication.clipboard().setText(command)
+        self._append_log("已复制 TensorRT 命令模板: " + command)
 
     def query_jetson_displays(self):
         command = display_service.query_display_command(

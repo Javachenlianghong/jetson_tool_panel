@@ -232,3 +232,90 @@ ip link 2>/dev/null || ifconfig -a 2>/dev/null || true
 section "I2C / SPI"
 ls -l /dev/i2c* /dev/spidev* 2>/dev/null || echo "未发现 I2C/SPI 设备节点"
 """.replace("__VIDEO_DEVICE__", quote_for_bash(video_device.strip() or "/dev/video0"))
+
+
+def file_list_command(remote_path):
+    return r"""
+path=__PATH__
+if [ -z "$path" ]; then
+    path="$HOME"
+fi
+echo "Listing: $path"
+if [ -d "$path" ]; then
+    ls -lah "$path"
+else
+    ls -lah "$path"
+fi
+""".replace("__PATH__", quote_for_bash(remote_path.strip()))
+
+
+def mkdir_command(remote_path):
+    return "mkdir -p {}; echo Created: {}".format(
+        quote_for_bash(remote_path.strip()),
+        quote_for_bash(remote_path.strip()),
+    )
+
+
+def remove_path_command(remote_path):
+    return r"""
+path=__PATH__
+if [ -z "$path" ] || [ "$path" = "/" ] || [ "$path" = "$HOME" ]; then
+    echo "Refuse to remove unsafe path: $path"
+    exit 2
+fi
+rm -rf -- "$path"
+echo "Removed: $path"
+""".replace("__PATH__", quote_for_bash(remote_path.strip()))
+
+
+def service_command(service_name, action):
+    service_name = service_name.strip()
+    action = action.strip()
+    if action == "logs":
+        return "journalctl -u {} -n 200 -f".format(quote_for_bash(service_name))
+    if action == "status":
+        return "systemctl status {} --no-pager || systemctl --user status {} --no-pager".format(
+            quote_for_bash(service_name),
+            quote_for_bash(service_name),
+        )
+    if action in ("start", "stop", "restart"):
+        return (
+            "sudo -n systemctl {action} {service} || "
+            "systemctl --user {action} {service}"
+        ).format(action=action, service=quote_for_bash(service_name))
+    return "echo Unsupported service action: {}".format(quote_for_bash(action))
+
+
+def tensorrt_command(workdir, onnx_path, engine_path, precision):
+    precision_flag = "--fp16" if precision.lower() == "fp16" else ""
+    if precision.lower() == "int8":
+        precision_flag = "--int8"
+    args = [
+        "trtexec",
+        "--onnx={}".format(onnx_path.strip()),
+        "--saveEngine={}".format(engine_path.strip()),
+    ]
+    if precision_flag:
+        args.append(precision_flag)
+    return "set -e; cd {}; {}".format(
+        quote_for_bash(workdir.strip() or "."),
+        " ".join(quote_for_bash(part) for part in args),
+    )
+
+
+def rknn_template_command(workdir, model_path, output_path):
+    return r"""
+set -e
+cd __WORKDIR__
+echo "RKNN deployment template"
+echo "Input model: __MODEL__"
+echo "Output RKNN: __OUTPUT__"
+echo
+echo "Typical conversion runs on an x86 host with rknn-toolkit2 installed."
+echo "Typical runtime test runs on RK3588 with rknn runtime and /dev/rknpu."
+echo
+echo "Suggested runtime command:"
+echo "./rknn_yolov8_demo __OUTPUT__ ./test.jpg"
+""".replace("__WORKDIR__", quote_for_bash(workdir.strip() or ".")).replace(
+        "__MODEL__", model_path.strip()
+    ).replace("__OUTPUT__", output_path.strip())
