@@ -4,10 +4,38 @@ from PyQt5.QtWidgets import QApplication, QInputDialog, QMessageBox
 
 from core.model_workers import RemoteModelScanWorker
 from core.config_store import slugify
-from services import remote_ops_service
+from services import remote_ops_service, ssh_service
 
 
 class ModelControllerMixin:
+    def _set_model_status(self, text):
+        if self.model_status_label is not None:
+            self.model_status_label.setText(text)
+
+    def _set_model_result(self, title, result):
+        if self.model_result_text is None:
+            return
+        lines = [title, "", result.get("summary", "")]
+        metrics = result.get("metrics") or {}
+        if metrics:
+            lines.append("")
+            lines.append("性能指标")
+            for key, value in metrics.items():
+                lines.append("- {}: {}".format(key, value))
+        warnings = result.get("warnings") or []
+        if warnings:
+            lines.append("")
+            lines.append("警告")
+            lines.extend("- " + item for item in warnings[:8])
+        details = result.get("details") or ""
+        if details:
+            lines.append("")
+            lines.append("日志尾部")
+            tail = details.splitlines()[-30:]
+            lines.extend(tail)
+        self.model_result_text.setPlainText("\n".join(lines))
+        self._set_model_status(result.get("summary", title))
+
     def _set_model_scan_running(self, running):
         if self.model_choose_source_button is not None:
             self.model_choose_source_button.setText("取消" if running else "选择")
@@ -102,8 +130,65 @@ class ModelControllerMixin:
             self.model_precision_combo.currentText(),
         )
 
+    def suggest_model_output_name(self):
+        output = remote_ops_service.suggest_engine_output_name(
+            self.model_source_edit.text(),
+            self.model_precision_combo.currentText(),
+        )
+        self.model_output_edit.setText(output)
+        self._set_model_status("已生成输出文件名: " + output)
+
+    def detect_model_environment(self):
+        self._set_model_status("正在检测 TensorRT...")
+        self._run_jetson_command("TensorRT 环境检测", remote_ops_service.tensorrt_environment_command())
+
+    def validate_model_paths(self):
+        self._set_model_status("正在验证模型路径...")
+        self._run_jetson_command(
+            "验证模型路径",
+            remote_ops_service.model_validate_command(
+                self.model_workdir_edit.text(),
+                self.model_source_edit.text(),
+                self.model_output_edit.text(),
+                self.model_test_image_edit.text(),
+            ),
+        )
+
     def run_tensorrt_conversion(self):
+        if not self.model_output_edit.text().strip():
+            self.suggest_model_output_name()
+        self._set_model_status("正在转换 TensorRT engine...")
         self._run_jetson_command("TensorRT 模型转换", self._current_tensorrt_command())
+
+    def run_tensorrt_conversion_then_benchmark(self):
+        if not self.model_output_edit.text().strip():
+            self.suggest_model_output_name()
+        remote = self._remote_or_warn()
+        if not remote:
+            return
+        self._set_model_status("正在转换并准备 Benchmark...")
+        steps = [
+            (
+                "TensorRT 模型转换",
+                ssh_service.remote_ssh_command(remote, self._current_tensorrt_command(), done_marker=True),
+                self.paths.app_dir,
+                {"done_marker": ssh_service.DONE_MARKER, "stop_on_done_marker": True},
+            ),
+            (
+                "TensorRT Benchmark",
+                ssh_service.remote_ssh_command(
+                    remote,
+                    remote_ops_service.tensorrt_benchmark_command(
+                        self.model_workdir_edit.text(),
+                        self.model_output_edit.text(),
+                    ),
+                    done_marker=True,
+                ),
+                self.paths.app_dir,
+                {"done_marker": ssh_service.DONE_MARKER, "stop_on_done_marker": True},
+            ),
+        ]
+        self._start_workflow(steps)
 
     def run_model_benchmark(self):
         output = self.model_output_edit.text().strip()
@@ -122,6 +207,7 @@ class ModelControllerMixin:
             self.model_workdir_edit.text(),
             output,
         )
+        self._set_model_status("正在运行 Benchmark...")
         self._run_jetson_command("TensorRT Benchmark", command)
 
     def show_rknn_template(self):
@@ -138,6 +224,19 @@ class ModelControllerMixin:
         command = self._current_tensorrt_command()
         QApplication.clipboard().setText(command)
         self._append_log("已复制 TensorRT 命令模板: " + command)
+
+    def handle_model_command_success(self, title):
+        if title in ("TensorRT 环境检测", "验证模型路径", "TensorRT 模型转换", "TensorRT Benchmark"):
+            result = remote_ops_service.parse_tensorrt_output(self.current_command_output)
+            if title == "TensorRT 环境检测" and result.get("status") != "error":
+                result = dict(result)
+                result["summary"] = "TensorRT 环境检测完成。"
+            if title == "验证模型路径" and result.get("status") != "error":
+                result = dict(result)
+                result["summary"] = "模型路径验证通过。"
+            self._set_model_result(title, result)
+            return True
+        return False
 
     def _current_model_profile_id(self):
         return self._combo_current_data(self.model_profile_combo)

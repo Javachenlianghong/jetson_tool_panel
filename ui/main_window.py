@@ -225,6 +225,8 @@ class JetsonControlPanel(
         self.model_output_edit = None
         self.model_test_image_edit = None
         self.model_precision_combo = None
+        self.model_status_label = None
+        self.model_result_text = None
         self.model_scan_worker = None
         self.pending_model_scan_password = None
         self.device_profile_combo = None
@@ -1716,6 +1718,8 @@ class JetsonControlPanel(
             self._update_service_status_page(data)
         elif title.startswith("服务start:") or title.startswith("服务stop:") or title.startswith("服务restart:"):
             self._note_service_operation_complete(title)
+        if hasattr(self, "handle_model_command_success"):
+            self.handle_model_command_success(title)
 
     def _record_task_history(self, title, return_code):
         context = self._active_context()

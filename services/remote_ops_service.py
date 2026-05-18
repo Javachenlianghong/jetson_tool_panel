@@ -60,6 +60,18 @@ TRTEXEC_CANDIDATES = (
 )
 
 
+def suggest_engine_output_name(model_path, precision="fp16"):
+    name = str(model_path or "").strip().split("/")[-1].split("\\")[-1]
+    if "." in name:
+        stem = ".".join(name.split(".")[:-1]) or name
+    else:
+        stem = name or "model"
+    suffix = str(precision or "fp16").strip().lower() or "fp16"
+    if suffix == "fp32":
+        return "{}.engine".format(stem)
+    return "{}-{}.engine".format(stem, suffix)
+
+
 def clean_remote_path(remote_path):
     return str(remote_path or "").strip()
 
@@ -840,6 +852,75 @@ def trtexec_resolver_command():
     ).format(candidates)
 
 
+def tensorrt_environment_command():
+    return r"""
+set +e
+echo "== TensorRT executable =="
+__TRTEXEC_RESOLVER__
+status=$?
+if [ "$status" -ne 0 ]; then
+    exit "$status"
+fi
+printf 'trtexec: %s\n' "$trtexec_bin"
+"$trtexec_bin" --help 2>&1 | head -n 8 || true
+echo
+echo "== CUDA =="
+command -v nvcc >/dev/null 2>&1 && nvcc --version || echo "nvcc not found"
+command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
+echo
+echo "== TensorRT libraries =="
+python3 - <<'PY' 2>/dev/null || true
+try:
+    import tensorrt as trt
+    print("TensorRT Python:", trt.__version__)
+except Exception as exc:
+    print("TensorRT Python unavailable:", exc)
+PY
+ldconfig -p 2>/dev/null | grep -E 'libnvinfer|libnvonnxparser' | head -n 12 || true
+""".replace("__TRTEXEC_RESOLVER__", trtexec_resolver_command())
+
+
+def model_validate_command(workdir, model_path, output_path="", test_image=""):
+    return r"""
+set -e
+workdir=__WORKDIR__
+model_path=__MODEL__
+output_path=__OUTPUT__
+test_image=__IMAGE__
+echo "== Model validation =="
+cd "$workdir"
+printf 'Workdir: %s\n' "$PWD"
+if [ ! -f "$model_path" ]; then
+    echo "ERROR: input model not found: $model_path"
+    exit 2
+fi
+printf 'Input model: '
+ls -lh "$model_path"
+if [ -n "$output_path" ]; then
+    output_dir="$(dirname "$output_path")"
+    [ "$output_dir" = "." ] || mkdir -p "$output_dir"
+    if [ ! -w "$output_dir" ]; then
+        echo "ERROR: output directory is not writable: $output_dir"
+        exit 3
+    fi
+    printf 'Output target: %s\n' "$output_path"
+fi
+if [ -n "$test_image" ]; then
+    if [ -f "$test_image" ]; then
+        printf 'Test image: '
+        ls -lh "$test_image"
+    else
+        printf 'WARN: test image not found: %s\n' "$test_image"
+    fi
+fi
+echo "Model validation OK"
+""".replace("__WORKDIR__", quote_for_bash(workdir.strip() or ".")).replace(
+        "__MODEL__", quote_for_bash(model_path.strip())
+    ).replace("__OUTPUT__", quote_for_bash(output_path.strip())).replace(
+        "__IMAGE__", quote_for_bash(test_image.strip())
+    )
+
+
 def tensorrt_command(workdir, onnx_path, engine_path, precision):
     precision_flag = "--fp16" if precision.lower() == "fp16" else ""
     if precision.lower() == "int8":
@@ -869,6 +950,79 @@ def tensorrt_benchmark_command(workdir, engine_path):
         trtexec_resolver_command(),
         " ".join(quote_for_bash(part) for part in args),
     )
+
+
+def parse_tensorrt_output(lines):
+    text = "\n".join(str(line) for line in lines)
+    lower = text.lower()
+    warnings = []
+    for line in lines:
+        raw = str(line).strip()
+        low = raw.lower()
+        if any(marker in low for marker in ("[w]", "warning", "insufficient workspace", "no implementation")):
+            warnings.append(raw)
+
+    metrics = {}
+    import re
+
+    throughput = re.search(r"Throughput:\s*([0-9.]+)\s*qps", text, re.IGNORECASE)
+    if throughput:
+        metrics["throughput"] = "{} qps".format(throughput.group(1))
+    latency = re.search(r"Latency:\s*min\s*=\s*([^,]+),\s*max\s*=\s*([^,]+),\s*mean\s*=\s*([^,\n]+)", text, re.IGNORECASE)
+    if latency:
+        metrics["latency"] = "min {}, max {}, mean {}".format(
+            latency.group(1).strip(),
+            latency.group(2).strip(),
+            latency.group(3).strip(),
+        )
+    gpu_compute = re.search(r"GPU Compute Time:\s*min\s*=\s*([^,]+),\s*max\s*=\s*([^,]+),\s*mean\s*=\s*([^,\n]+)", text, re.IGNORECASE)
+    if gpu_compute:
+        metrics["gpu_compute"] = "min {}, max {}, mean {}".format(
+            gpu_compute.group(1).strip(),
+            gpu_compute.group(2).strip(),
+            gpu_compute.group(3).strip(),
+        )
+
+    if "trtexec not found" in lower or "command not found" in lower:
+        status = "error"
+        summary = "trtexec 不可用，请安装 TensorRT samples 或把 trtexec 加入 PATH。"
+    elif "error" in lower or "[e]" in lower or "failed" in lower:
+        status = "error"
+        summary = "TensorRT 命令失败，查看日志中的 ERROR/failed 行。"
+    elif metrics:
+        status = "ok"
+        summary = "TensorRT 执行完成: " + ", ".join("{}={}".format(k, v) for k, v in metrics.items())
+    else:
+        status = "warning" if warnings else "unknown"
+        summary = "命令完成，但未解析到 TensorRT 性能指标。"
+
+    if any("workspace" in item.lower() for item in warnings):
+        summary += " 注意：存在 workspace 不足提示，可能影响性能。"
+
+    return {
+        "status": status,
+        "summary": summary,
+        "metrics": metrics,
+        "warnings": warnings[:12],
+        "details": text,
+    }
+
+
+def diagnose_command_output(lines):
+    text = "\n".join(str(line) for line in lines)
+    lower = text.lower()
+    hints = []
+    if "cannot open display" in lower:
+        hints.append("DISPLAY 无法打开：确认 Jetson 桌面已登录，并在 SSH 会话导出 DISPLAY=:0 和 XAUTHORITY=/home/jetson/.Xauthority。")
+    if "trtexec not found" in lower or "bash: trtexec: command not found" in lower:
+        hints.append("trtexec 未找到：使用模型页“检测 TensorRT”，或把 /usr/src/tensorrt/bin 加入 PATH。")
+    if "no such file" in lower or "not found" in lower:
+        hints.append("存在文件不存在提示：检查远端工作目录、模型文件、视频或图片路径。")
+    if "out of memory" in lower or "cuda error" in lower or "insufficient workspace" in lower:
+        hints.append("内存/显存可能不足：尝试 fp16、降低输入尺寸/batch，关闭占用 GPU 的进程或增加 swap。")
+    if "permission denied" in lower:
+        hints.append("权限不足：检查文件权限，必要时 chmod +x 或使用有权限的目录。")
+    return hints
 
 
 def rknn_template_command(workdir, model_path, output_path):

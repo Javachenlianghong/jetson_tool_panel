@@ -62,6 +62,36 @@ class RemoteOpsServiceTest(unittest.TestCase):
         self.assertIn("--loadEngine=", command)
         self.assertIn("--duration=10", command)
 
+    def test_suggest_engine_output_name_includes_precision(self):
+        self.assertEqual(
+            remote_ops_service.suggest_engine_output_name("models/yolov8n.onnx", "fp16"),
+            "yolov8n-fp16.engine",
+        )
+        self.assertEqual(
+            remote_ops_service.suggest_engine_output_name("models/yolov8n.onnx", "fp32"),
+            "yolov8n.engine",
+        )
+
+    def test_model_validate_command_checks_input_and_output(self):
+        command = remote_ops_service.model_validate_command("/project", "models/a.onnx", "models/a.engine", "test.jpg")
+        self.assertIn("Model validation", command)
+        self.assertIn("input model not found", command)
+        self.assertIn("output directory is not writable", command)
+
+    def test_parse_tensorrt_output_extracts_metrics_and_warnings(self):
+        result = remote_ops_service.parse_tensorrt_output([
+            "[I] Throughput: 22.5 qps",
+            "[I] Latency: min = 1.1 ms, max = 2.2 ms, mean = 1.5 ms",
+            "[W] Some tactics do not have sufficient workspace memory to run.",
+        ])
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["metrics"]["throughput"], "22.5 qps")
+        self.assertIn("workspace", result["summary"])
+
+    def test_diagnose_command_output_returns_actionable_display_hint(self):
+        hints = remote_ops_service.diagnose_command_output(["Gtk-WARNING **: cannot open display:"])
+        self.assertTrue(any("DISPLAY" in hint for hint in hints))
+
     def test_parse_environment_check_output_groups_statuses(self):
         output = [
             "Environment check",
