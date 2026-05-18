@@ -57,6 +57,28 @@ class TerminalControllerMixin:
         if self.terminal_output_edit:
             self.terminal_output_edit.clear()
 
+    def terminal_send_quick_command(self):
+        if self.terminal_quick_command_combo is None:
+            return
+        command = self.terminal_quick_command_combo.currentText().strip()
+        mapping = {
+            "cd 项目目录": "cd {}".format(self.remote_path_edit.text().strip() or "~"),
+            "检测 DISPLAY": "printf 'DISPLAY=%s\\nXAUTHORITY=%s\\n' \"$DISPLAY\" \"$XAUTHORITY\"; xdpyinfo >/dev/null 2>&1 && echo DISPLAY_OK || echo DISPLAY_FAIL",
+            "查看 run-control.log": "tail -n 120 -f run-control.log",
+            "停止 tegrastats": "pkill -f tegrastats || true",
+        }
+        self.terminal_send_text(mapping.get(command, command) + "\n", warn=True)
+
+    def terminal_cd_project(self):
+        self.terminal_send_text("cd {}\n".format(self.remote_path_edit.text().strip() or "~"), warn=True)
+
+    def terminal_check_display(self):
+        self.terminal_send_text(
+            "printf 'DISPLAY=%s\\nXAUTHORITY=%s\\n' \"$DISPLAY\" \"$XAUTHORITY\"; "
+            "xdpyinfo >/dev/null 2>&1 && echo DISPLAY_OK || echo DISPLAY_FAIL\n",
+            warn=True,
+        )
+
     def _terminal_append_text(self, text):
         self.terminal_buffer.feed(text)
         if self.terminal_output_edit is None:

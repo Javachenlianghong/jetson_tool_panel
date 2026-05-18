@@ -92,6 +92,15 @@ class RemoteOpsServiceTest(unittest.TestCase):
         hints = remote_ops_service.diagnose_command_output(["Gtk-WARNING **: cannot open display:"])
         self.assertTrue(any("DISPLAY" in hint for hint in hints))
 
+    def test_parse_runtime_output_extracts_fps_and_display_error(self):
+        ok = remote_ops_service.parse_runtime_output(["FPS: 18.7", "PID: 1234"])
+        self.assertEqual(ok["status"], "ok")
+        self.assertEqual(ok["metrics"]["fps"], "18.7")
+
+        failed = remote_ops_service.parse_runtime_output(["Gtk-WARNING **: cannot open display:"])
+        self.assertEqual(failed["status"], "error")
+        self.assertTrue(failed["hints"])
+
     def test_parse_environment_check_output_groups_statuses(self):
         output = [
             "Environment check",

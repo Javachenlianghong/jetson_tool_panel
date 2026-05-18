@@ -35,6 +35,7 @@ class UiSmokeTest(unittest.TestCase):
             button_texts = [button.text() for button in terminal_page.findChildren(QPushButton)]
             self.assertIn("同步到 Jetson", button_texts)
             self.assertIn("本地预览", button_texts)
+            self.assertIn("检测 DISPLAY", button_texts)
             self.assertTrue(hasattr(window, "preview_remote_selected_file"))
             checkbox_texts = [checkbox.text() for checkbox in terminal_page.findChildren(QCheckBox)]
             self.assertIn("连接后导出 DISPLAY", checkbox_texts)
@@ -49,6 +50,8 @@ class UiSmokeTest(unittest.TestCase):
             self.assertIn("预览同步变更", transfer_button_texts)
             self.assertIsNotNone(window.sync_preview_table)
             self.assertIsNotNone(window.task_center_table)
+            self.assertIsNotNone(window.runtime_result_text)
+            self.assertIsNotNone(window.monitor_history_label)
         finally:
             window._stop_resource_monitor()
             window.deleteLater()

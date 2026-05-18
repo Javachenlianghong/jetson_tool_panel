@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QCheckBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QCheckBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
 
 from ui.pages.common import build_note, build_panel
 
@@ -39,6 +39,13 @@ def build_runtime_page(window):
     grid.addLayout(buttons, 3, 0, 1, 2)
 
     layout.addWidget(build_panel("远程运行控制", grid))
+    result_layout = QVBoxLayout()
+    window.runtime_result_text = QPlainTextEdit()
+    window.runtime_result_text.setReadOnly(True)
+    window.runtime_result_text.setMinimumHeight(140)
+    window.runtime_result_text.setPlainText("运行命令后显示 FPS、PID、日志路径、DISPLAY/CUDA/文件路径等诊断结果。")
+    result_layout.addWidget(window.runtime_result_text)
+    layout.addWidget(build_panel("运行结果", result_layout))
     layout.addWidget(build_note("前台运行会持续占用底部日志区；后台运行会返回 PID，并把输出写到远端目录的 run-control.log。"))
     layout.addStretch(1)
     return page

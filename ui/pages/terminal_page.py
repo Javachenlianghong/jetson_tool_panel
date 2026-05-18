@@ -176,6 +176,20 @@ def _build_session_bar(window):
     window.terminal_export_display_check.clicked.connect(lambda _checked: window._save_settings())
     layout.addWidget(window.terminal_export_display_check)
     layout.addSpacing(10)
+    window.terminal_quick_command_combo = QComboBox()
+    window.terminal_quick_command_combo.addItems([
+        "pwd",
+        "ls -lah",
+        "cd 项目目录",
+        "tegrastats",
+        "检测 DISPLAY",
+        "查看 run-control.log",
+        "停止 tegrastats",
+    ])
+    layout.addWidget(window.terminal_quick_command_combo)
+    layout.addWidget(_tool_button("发送", window.terminal_send_quick_command))
+    layout.addWidget(_tool_button("cd 项目", window.terminal_cd_project))
+    layout.addWidget(_tool_button("检测 DISPLAY", window.terminal_check_display))
 
     window.terminal_status_label = QLabel("未连接")
     window.terminal_status_label.setObjectName("MutedText")

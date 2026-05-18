@@ -196,6 +196,7 @@ class JetsonControlPanel(
         self.terminal_status_label = None
         self.terminal_output_edit = None
         self.terminal_export_display_check = None
+        self.terminal_quick_command_combo = None
         self.terminal_buffer = PlainTerminalBuffer()
         self.terminal_worker = None
         self.terminal_password = None
@@ -209,6 +210,7 @@ class JetsonControlPanel(
         self.run_workdir_edit = None
         self.run_command_edit = None
         self.run_background_check = None
+        self.runtime_result_text = None
         self.process_filter_edit = None
         self.kill_pid_edit = None
         self.pkill_pattern_edit = None
@@ -266,9 +268,13 @@ class JetsonControlPanel(
         self.status_dots = {}
         self.monitor_labels = {}
         self.monitor_status_label = None
+        self.monitor_history_label = None
+        self.monitor_history = []
         self.resource_monitor_worker = None
         self.resource_monitor_remote = None
         self.resource_monitor_last_status = "未连接"
+        self.resource_monitor_reconnects = 0
+        self.resource_monitor_auto_reconnect = True
         self.health_timer = QTimer(self)
         self.health_timer.timeout.connect(self.refresh_device_health)
 
@@ -576,6 +582,10 @@ class JetsonControlPanel(
             group.addWidget(label)
             layout.addLayout(group)
 
+        self.monitor_history_label = QLabel("趋势 --")
+        self.monitor_history_label.setObjectName("MonitorStatus")
+        self.monitor_history_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.monitor_history_label)
         layout.addStretch(1)
         self.monitor_status_label = QLabel("未连接")
         self.monitor_status_label.setObjectName("MonitorStatus")
@@ -616,6 +626,15 @@ class JetsonControlPanel(
     def _update_resource_monitor(self, metrics):
         if not metrics:
             return
+        self.resource_monitor_reconnects = 0
+        sample = dict(metrics)
+        sample["time"] = datetime.now()
+        self.monitor_history.append(sample)
+        cutoff = datetime.now().timestamp() - 300
+        self.monitor_history = [
+            item for item in self.monitor_history[-180:]
+            if item.get("time", datetime.now()).timestamp() >= cutoff
+        ]
         for key in ("cpu", "memory", "gpu", "temperature"):
             label = self.monitor_labels.get(key)
             if label is not None:
@@ -628,13 +647,55 @@ class JetsonControlPanel(
             self.resource_monitor_last_status = status
             self.monitor_status_label.setText(status)
             self.monitor_status_label.setToolTip(raw)
+        if self.monitor_history_label is not None:
+            self.monitor_history_label.setText(self._monitor_history_summary())
         self._refresh_task_center()
 
     def _set_resource_monitor_status(self, status):
         self.resource_monitor_last_status = str(status or "未知")
         if self.monitor_status_label is not None:
             self.monitor_status_label.setText(self.resource_monitor_last_status)
+        if (
+            self.resource_monitor_auto_reconnect
+            and self.resource_monitor_remote
+            and "监控已停止" in self.resource_monitor_last_status
+            and self.resource_monitor_reconnects < 3
+        ):
+            self.resource_monitor_reconnects += 1
+            delay_ms = 3000 * self.resource_monitor_reconnects
+            if self.monitor_status_label is not None:
+                self.monitor_status_label.setText("监控已停止，{} 秒后重连".format(delay_ms // 1000))
+            QTimer.singleShot(delay_ms, self._restart_resource_monitor)
         self._refresh_task_center()
+
+    def _monitor_history_summary(self):
+        if not self.monitor_history:
+            return "趋势 --"
+        latest = self.monitor_history[-1]
+        temps = []
+        for item in self.monitor_history:
+            text = str(item.get("temperature") or "")
+            numbers = []
+            current = ""
+            for char in text:
+                if char.isdigit() or char == ".":
+                    current += char
+                elif current:
+                    numbers.append(current)
+                    current = ""
+            if current:
+                numbers.append(current)
+            for number in numbers:
+                try:
+                    temps.append(float(number))
+                except ValueError:
+                    pass
+        temp_text = "最高温 {:.1f}C".format(max(temps)) if temps else "最高温未知"
+        return "趋势 {} 样本，CPU {}，{}".format(
+            len(self.monitor_history),
+            latest.get("cpu", "未知"),
+            temp_text,
+        )
 
     def _stop_resource_monitor(self):
         worker = self.resource_monitor_worker
@@ -1670,6 +1731,7 @@ class JetsonControlPanel(
                 self.files_summary_label.setText("列出远程文件失败，请查看底部日志。")
             elif title.startswith("服务") and self.service_status_text:
                 self.service_status_text.setPlainText("服务操作失败，请查看底部日志。")
+            self._show_command_diagnostics(title)
             self.workflow_queue = []
         self._record_task_history(title, return_code)
         self._sync_command_running_state()
@@ -1722,10 +1784,49 @@ class JetsonControlPanel(
             self._update_service_status_page(data)
         elif title.startswith("服务start:") or title.startswith("服务stop:") or title.startswith("服务restart:"):
             self._note_service_operation_complete(title)
+        elif title in ("运行远程程序", "项目后台运行"):
+            self._update_runtime_result(title, remote_ops_service.parse_runtime_output(self.current_command_output))
         elif title == "预览同步变更":
             self._update_sync_preview(parse_sync_preview_output(self.current_command_output))
         if hasattr(self, "handle_model_command_success"):
             self.handle_model_command_success(title)
+
+    def _update_runtime_result(self, title, result):
+        if self.runtime_result_text is None:
+            return
+        lines = [title, "", result.get("summary", "")]
+        metrics = result.get("metrics") or {}
+        if metrics:
+            lines.append("")
+            lines.append("指标")
+            for key, value in metrics.items():
+                lines.append("- {}: {}".format(key, value))
+        hints = result.get("hints") or []
+        if hints:
+            lines.append("")
+            lines.append("建议")
+            lines.extend("- " + hint for hint in hints)
+        details = result.get("details") or ""
+        if details:
+            lines.append("")
+            lines.append("日志尾部")
+            lines.extend(details.splitlines()[-30:])
+        self.runtime_result_text.setPlainText("\n".join(lines))
+
+    def _show_command_diagnostics(self, title):
+        hints = remote_ops_service.diagnose_command_output(self.current_command_output)
+        if not hints:
+            return
+        self._append_log("诊断建议:")
+        for hint in hints:
+            self._append_log("- " + hint)
+        if title in ("运行远程程序", "项目后台运行", "TensorRT 模型转换", "TensorRT Benchmark"):
+            self._update_runtime_result(title, {
+                "summary": "命令失败，已生成诊断建议。",
+                "metrics": {},
+                "hints": hints,
+                "details": "\n".join(self.current_command_output),
+            })
 
     def _record_task_history(self, title, return_code):
         context = self._active_context()

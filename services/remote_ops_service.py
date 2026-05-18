@@ -1025,6 +1025,47 @@ def diagnose_command_output(lines):
     return hints
 
 
+def parse_runtime_output(lines):
+    text = "\n".join(str(line) for line in lines)
+    lower = text.lower()
+    import re
+
+    metrics = {}
+    fps = re.search(r"\bFPS[:=\s]+([0-9.]+)", text, re.IGNORECASE)
+    if fps:
+        metrics["fps"] = fps.group(1)
+    qps = re.search(r"Throughput:\s*([0-9.]+)\s*qps", text, re.IGNORECASE)
+    if qps:
+        metrics["throughput"] = "{} qps".format(qps.group(1))
+    pid = re.search(r"\bPID[:=\s]+(\d+)", text, re.IGNORECASE)
+    if pid:
+        metrics["pid"] = pid.group(1)
+    log_path = re.search(r"(?:log|日志)[:=\s]+([^\s]+\.log)", text, re.IGNORECASE)
+    if log_path:
+        metrics["log"] = log_path.group(1)
+
+    hints = diagnose_command_output(lines)
+    if "cannot open display" in lower:
+        status = "error"
+        summary = "图形显示打开失败。"
+    elif any(marker in lower for marker in ("error", "failed", "traceback", "command not found")):
+        status = "error"
+        summary = "运行命令返回错误。"
+    elif metrics:
+        status = "ok"
+        summary = "运行完成: " + ", ".join("{}={}".format(key, value) for key, value in metrics.items())
+    else:
+        status = "ok"
+        summary = "运行命令已完成。"
+    return {
+        "status": status,
+        "summary": summary,
+        "metrics": metrics,
+        "hints": hints,
+        "details": text,
+    }
+
+
 def rknn_template_command(workdir, model_path, output_path):
     return r"""
 set -e
