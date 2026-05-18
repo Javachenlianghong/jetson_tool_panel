@@ -21,14 +21,14 @@ def build_model_page(window):
     window.model_test_image_edit = QLineEdit("test.jpg")
     window.model_precision_combo = QComboBox()
     window.model_precision_combo.addItems(["fp16", "fp32", "int8"])
-    choose_source_button = QPushButton("选择")
-    choose_source_button.clicked.connect(window.choose_model_source_file)
+    window.model_choose_source_button = QPushButton("选择")
+    window.model_choose_source_button.clicked.connect(window.choose_model_source_file)
 
     source_row = QHBoxLayout()
     source_row.setContentsMargins(0, 0, 0, 0)
     source_row.setSpacing(6)
     source_row.addWidget(window.model_source_edit, 1)
-    source_row.addWidget(choose_source_button)
+    source_row.addWidget(window.model_choose_source_button)
 
     grid.addWidget(QLabel("模型配置"), 0, 0)
     grid.addWidget(window.model_profile_combo, 0, 1)

@@ -41,6 +41,7 @@ from PyQt5.QtWidgets import (
 
 from core.command_controller import CommandController
 from core.command_runner import format_command
+from core.model_workers import RemoteModelScanWorker
 from core.config_store import ProjectConfigStore, slugify
 from core.paths import DEFAULTS, PATHS
 from core.resource_monitor import ResourceMonitorWorker
@@ -212,9 +213,12 @@ class JetsonControlPanel(QMainWindow):
         self.model_profile_combo = None
         self.model_name_edit = None
         self.model_source_edit = None
+        self.model_choose_source_button = None
         self.model_output_edit = None
         self.model_test_image_edit = None
         self.model_precision_combo = None
+        self.model_scan_worker = None
+        self.pending_model_scan_password = None
         self.device_profile_combo = None
         self.device_name_edit = None
         self.device_remote_edit = None
@@ -3127,73 +3131,60 @@ class JetsonControlPanel(QMainWindow):
             self.model_precision_combo.currentText(),
         )
 
-    def _remote_model_file_candidates(self, password=None):
+    def _set_model_scan_running(self, running):
+        if self.model_choose_source_button is not None:
+            self.model_choose_source_button.setText("取消" if running else "选择")
+            self.model_choose_source_button.setEnabled(True)
+
+    def _start_model_scan(self, password=None):
         remote = self._remote_or_warn()
         if not remote:
-            return []
+            return
         workdir = self.model_workdir_edit.text().strip() if self.model_workdir_edit else ""
         workdir = workdir or "."
-        client = None
-        sftp = None
-        try:
-            client, _target = paramiko_service.create_ssh_client(
-                remote,
-                password=password if password is not None else (self.sftp_password or self.terminal_password),
-            )
-            sftp = client.open_sftp()
-            root = sftp.normalize(workdir)
-            candidates = []
-            stack = [(root, 0)]
-            model_extensions = (".onnx", ".engine", ".rknn", ".pt", ".pth", ".tflite")
-            skip_dirs = {".git", "__pycache__", "build", "cmake-build-debug", "cmake-build-release"}
-            while stack:
-                directory, depth = stack.pop()
-                try:
-                    attrs = sftp.listdir_attr(directory)
-                except OSError:
-                    continue
-                for attr in attrs:
-                    name = attr.filename
-                    if name in (".", ".."):
-                        continue
-                    remote_path = paramiko_service.join_remote_path(directory, name)
-                    item = paramiko_service.sftp_attr_to_item(name, attr)
-                    if item.get("is_dir"):
-                        if depth < 3 and name not in skip_dirs:
-                            stack.append((remote_path, depth + 1))
-                        continue
-                    if name.lower().endswith(model_extensions):
-                        relative = posixpath.relpath(remote_path, root)
-                        candidates.append(relative if not relative.startswith("..") else remote_path)
-            return sorted(set(candidates), key=lambda item: (item.count("/"), item.lower()))
-        finally:
-            try:
-                if sftp is not None:
-                    sftp.close()
-            except Exception:
-                pass
-            try:
-                if client is not None:
-                    client.close()
-            except Exception:
-                pass
+        self.pending_model_scan_password = None
+        self.model_scan_worker = RemoteModelScanWorker(
+            remote,
+            workdir,
+            password=password if password is not None else (self.sftp_password or self.terminal_password),
+            timeout_seconds=20,
+            parent=self,
+        )
+        self.model_scan_worker.message.connect(self._model_scan_message)
+        self.model_scan_worker.candidates_ready.connect(self._model_scan_candidates_ready)
+        self.model_scan_worker.auth_failed.connect(self._model_scan_auth_failed)
+        self.model_scan_worker.failed.connect(self._model_scan_failed)
+        self.model_scan_worker.finished.connect(self._model_scan_finished)
+        self._set_model_scan_running(True)
+        self._append_log("开始扫描远端模型文件: " + workdir)
+        self.model_scan_worker.start()
 
     def choose_model_source_file(self):
-        try:
-            candidates = self._remote_model_file_candidates()
-        except Exception as exc:
-            if "Authentication" not in exc.__class__.__name__:
-                QMessageBox.warning(self, "选择模型失败", str(exc))
-                return
-            password = self._prompt_ssh_password("SFTP 认证")
-            if password is None:
-                return
-            self.sftp_password = password
-            try:
-                candidates = self._remote_model_file_candidates(password=password)
-            except Exception as retry_exc:
-                QMessageBox.warning(self, "选择模型失败", str(retry_exc))
-                return
+        if self.model_scan_worker and self.model_scan_worker.isRunning():
+            self.model_scan_worker.cancel()
+            self._append_log("已请求取消模型文件扫描。")
+            return
+        self._start_model_scan()
+
+    def _model_scan_message(self, message):
+        self._append_log(message)
+
+    def _model_scan_auth_failed(self, error):
+        worker = self.model_scan_worker
+        if worker and worker.password:
+            QMessageBox.warning(self, "选择模型失败", error)
+            return
+        password = self._prompt_ssh_password("SFTP 认证")
+        if password is None:
+            self._append_log("模型文件扫描认证已取消。")
+            return
+        self.sftp_password = password
+        self.pending_model_scan_password = password
+
+    def _model_scan_failed(self, error):
+        QMessageBox.warning(self, "选择模型失败", str(error))
+
+    def _model_scan_candidates_ready(self, candidates):
         if not candidates:
             QMessageBox.information(
                 self,
@@ -3214,6 +3205,15 @@ class JetsonControlPanel(QMainWindow):
         if ok and selected:
             self.model_source_edit.setText(selected)
             self._append_log("已选择输入模型: " + selected)
+
+    def _model_scan_finished(self):
+        self.model_scan_worker = None
+        if self.pending_model_scan_password is not None:
+            password = self.pending_model_scan_password
+            self.pending_model_scan_password = None
+            self._start_model_scan(password=password)
+            return
+        self._set_model_scan_running(False)
 
     def run_tensorrt_conversion(self):
         self._run_jetson_command("TensorRT 模型转换", self._current_tensorrt_command())
@@ -3660,6 +3660,9 @@ class JetsonControlPanel(QMainWindow):
         if self.terminal_worker and self.terminal_worker.isRunning():
             self.terminal_worker.stop()
             self.terminal_worker.wait(2000)
+        if self.model_scan_worker and self.model_scan_worker.isRunning():
+            self.model_scan_worker.cancel()
+            self.model_scan_worker.wait(2000)
         self._stop_resource_monitor()
         self._save_settings()
         event.accept()
