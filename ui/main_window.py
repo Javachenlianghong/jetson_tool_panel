@@ -59,10 +59,12 @@ from ui.pages.runtime_page import build_runtime_page
 from ui.pages.service_page import build_service_page
 from ui.pages.terminal_page import build_terminal_page
 from ui.pages.report_page import build_report_page
+from ui.pages.remote_desktop_page import build_remote_desktop_page
 from ui.pages.transfer_page import build_transfer_page
 from ui.pages.workbench_page import build_workbench_page
 from ui.controllers.model_controller import ModelControllerMixin
 from ui.controllers.proxy_sync_controller import ProxySyncControllerMixin
+from ui.controllers.remote_desktop_controller import RemoteDesktopControllerMixin
 from ui.controllers.report_display_controller import ReportDisplayControllerMixin
 from ui.controllers.sftp_controller import SftpControllerMixin
 from ui.controllers.terminal_controller import TerminalControllerMixin
@@ -133,6 +135,7 @@ class JetsonControlPanel(
     TerminalControllerMixin,
     SftpControllerMixin,
     WorkflowControllerMixin,
+    RemoteDesktopControllerMixin,
     ReportDisplayControllerMixin,
     ProxySyncControllerMixin,
     QMainWindow,
@@ -200,6 +203,13 @@ class JetsonControlPanel(
         self.terminal_buffer = PlainTerminalBuffer()
         self.terminal_worker = None
         self.terminal_password = None
+        self.remote_desktop_display_edit = None
+        self.remote_desktop_xauthority_edit = None
+        self.remote_desktop_port_spin = None
+        self.remote_desktop_status_label = None
+        self.remote_desktop_view = None
+        self.remote_desktop_worker = None
+        self.remote_desktop_last_status = "未连接"
         self.health_refresh_button = None
         self.health_auto_check = None
         self.health_interval_combo = None
@@ -404,6 +414,7 @@ class JetsonControlPanel(
                     ("proxy", "代理设置", style.standardIcon(QStyle.SP_DriveNetIcon), build_proxy_page),
                     ("health", "设备状态", style.standardIcon(QStyle.SP_ComputerIcon), build_health_page),
                     ("terminal", "SSH 工作台", style.standardIcon(QStyle.SP_ComputerIcon), build_terminal_page),
+                    ("desktop", "远程桌面", style.standardIcon(QStyle.SP_DesktopIcon), build_remote_desktop_page),
                     ("runtime", "运行控制", style.standardIcon(QStyle.SP_MediaPlay), build_runtime_page),
                     ("logs", "日志查看", style.standardIcon(QStyle.SP_FileIcon), build_logs_page),
                     ("process", "进程管理", style.standardIcon(QStyle.SP_FileDialogDetailedView), build_process_page),
@@ -1439,6 +1450,11 @@ class JetsonControlPanel(
         self.refresh_rate_spin.setValue(self._setting_int("display/refresh_rate", 60))
         self.display_env_edit.setText(str(self.settings.value("display/display_env", ":0")))
         self.xauthority_edit.setText(str(self.settings.value("display/xauthority", "$HOME/.Xauthority")))
+        self.remote_desktop_display_edit.setText(str(self.settings.value("desktop/display_env", ":0")))
+        self.remote_desktop_xauthority_edit.setText(
+            str(self.settings.value("desktop/xauthority", "/home/jetson/.Xauthority"))
+        )
+        self.remote_desktop_port_spin.setValue(self._setting_int("desktop/port", 5900))
         self.terminal_export_display_check.setChecked(
             settings_bool(self.settings.value("terminal/export_display", False), False)
         )
@@ -1506,6 +1522,9 @@ class JetsonControlPanel(
         self.settings.setValue("display/refresh_rate", self.refresh_rate_spin.value())
         self.settings.setValue("display/display_env", self.display_env_edit.text().strip())
         self.settings.setValue("display/xauthority", self.xauthority_edit.text().strip())
+        self.settings.setValue("desktop/display_env", self.remote_desktop_display_edit.text().strip())
+        self.settings.setValue("desktop/xauthority", self.remote_desktop_xauthority_edit.text().strip())
+        self.settings.setValue("desktop/port", self.remote_desktop_port_spin.value())
         self.settings.setValue("terminal/export_display", self.terminal_export_display_check.isChecked())
         self.settings.setValue("display/framebuffer_fallback", self.framebuffer_fallback_check.isChecked())
         self.settings.setValue("health/auto_refresh", self.health_auto_check.isChecked())
@@ -1601,6 +1620,12 @@ class JetsonControlPanel(
                 self.terminal_worker,
                 terminal_title,
                 self._normalize_remote_text(self.remote_edit.text()) if self.remote_edit else "",
+            ),
+            self._worker_row(
+                "远程桌面",
+                self.remote_desktop_worker,
+                self.remote_desktop_last_status,
+                "127.0.0.1:{}".format(self.remote_desktop_port_spin.value() if self.remote_desktop_port_spin else 5900),
             ),
             [
                 "资源监控",
@@ -1793,6 +1818,8 @@ class JetsonControlPanel(
             self._update_sync_preview(parse_sync_preview_output(self.current_command_output))
         if hasattr(self, "handle_model_command_success"):
             self.handle_model_command_success(title)
+        if hasattr(self, "handle_remote_desktop_command_success"):
+            self.handle_remote_desktop_command_success(title)
 
     def _update_runtime_result(self, title, result):
         if self.runtime_result_text is None:
@@ -2220,6 +2247,9 @@ class JetsonControlPanel(
         if self.terminal_worker and self.terminal_worker.isRunning():
             self.terminal_worker.stop()
             self.terminal_worker.wait(2000)
+        if self.remote_desktop_worker and self.remote_desktop_worker.isRunning():
+            self.remote_desktop_worker.stop()
+            self.remote_desktop_worker.wait(2000)
         if self.model_scan_worker and self.model_scan_worker.isRunning():
             self.model_scan_worker.cancel()
             self.model_scan_worker.wait(2000)

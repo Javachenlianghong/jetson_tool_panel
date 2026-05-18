@@ -17,6 +17,7 @@ class UiSmokeTest(unittest.TestCase):
         window = JetsonControlPanel()
         try:
             self.assertIn("terminal", window.page_key_to_index)
+            self.assertIn("desktop", window.page_key_to_index)
             self.assertIsNotNone(window.terminal_output_edit)
             self.assertIsNotNone(window.local_files_table)
             self.assertIsNotNone(window.remote_files_table)
@@ -54,6 +55,12 @@ class UiSmokeTest(unittest.TestCase):
             self.assertIsNotNone(window.monitor_history_label)
             self.assertIsNotNone(window.device_overview_table)
             self.assertGreaterEqual(window.device_overview_table.rowCount(), 1)
+            desktop_page = window.page_stack.widget(window.page_key_to_index["desktop"])
+            desktop_button_texts = [button.text() for button in desktop_page.findChildren(QPushButton)]
+            self.assertIn("启动并连接", desktop_button_texts)
+            self.assertIn("停止服务", desktop_button_texts)
+            self.assertIsNotNone(window.remote_desktop_view)
+            self.assertTrue(hasattr(window, "connect_remote_desktop"))
         finally:
             window._stop_resource_monitor()
             window.deleteLater()
