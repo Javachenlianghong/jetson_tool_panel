@@ -97,7 +97,6 @@ class SshTerminalWorker(QThread):
 
 class SftpWorker(QThread):
     listed = pyqtSignal(str, list)
-    tree_listed = pyqtSignal(str, list)
     progress = pyqtSignal(str, int, int)
     file_progress = pyqtSignal(str, int, int, int, int)
     message = pyqtSignal(str)
@@ -126,8 +125,6 @@ class SftpWorker(QThread):
             self._sftp = self._client.open_sftp()
             if self.action == "list":
                 self._list_remote()
-            elif self.action == "list_dirs":
-                self._list_remote_dirs()
             elif self.action == "mkdir":
                 self._mkdir_remote()
             elif self.action == "delete_remote":
@@ -177,20 +174,6 @@ class SftpWorker(QThread):
             rows.append(item)
         self.listed.emit(remote_path, rows)
         self.finished_ok.emit("远端目录已刷新: {}".format(remote_path))
-
-    def _list_remote_dirs(self):
-        remote_path = self.payload.get("remote_path") or "."
-        remote_path = self._sftp.normalize(remote_path)
-        attrs = self._sftp.listdir_attr(remote_path)
-        items = []
-        for attr in attrs:
-            item = paramiko_service.sftp_attr_to_item(attr.filename, attr)
-            if item["is_dir"]:
-                item["path"] = paramiko_service.join_remote_path(remote_path, item["name"])
-                items.append(item)
-        items.sort(key=lambda item: item["name"].lower())
-        self.tree_listed.emit(remote_path, items)
-        self.finished_ok.emit("目录树已刷新: {}".format(remote_path))
 
     def _mkdir_remote(self):
         remote_path = self.payload.get("remote_path") or ""

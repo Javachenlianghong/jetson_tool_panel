@@ -21,8 +21,6 @@ class UiSmokeTest(unittest.TestCase):
             self.assertIsNotNone(window.terminal_input_edit)
             self.assertIsNotNone(window.local_files_table)
             self.assertIsNotNone(window.remote_files_table)
-            self.assertIsNotNone(window.local_dir_tree)
-            self.assertIsNotNone(window.remote_dir_tree)
             self.assertIsNotNone(window.transfer_progress_bar)
             self.assertEqual(window.local_files_table.contextMenuPolicy(), Qt.CustomContextMenu)
             self.assertEqual(window.remote_files_table.contextMenuPolicy(), Qt.CustomContextMenu)

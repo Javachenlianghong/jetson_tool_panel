@@ -34,7 +34,6 @@ from PyQt5.QtWidgets import (
     QStackedWidget,
     QStyle,
     QTableWidgetItem,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -168,14 +167,11 @@ class JetsonControlPanel(QMainWindow):
         self.files_table = None
         self.local_files_table = None
         self.remote_files_table = None
-        self.local_dir_tree = None
-        self.remote_dir_tree = None
         self.transfer_progress_bar = None
         self.sftp_worker = None
         self.sftp_password = None
         self.pending_sftp_retry = None
         self.pending_sftp_refresh = None
-        self.remote_tree_nodes_by_path = {}
         self.service_result_labels = {}
         self.service_status_text = None
         self.terminal_status_label = None
@@ -771,7 +767,7 @@ class JetsonControlPanel(QMainWindow):
                 background: #e0ecff;
                 color: #1d4ed8;
             }
-            QTableWidget, QTreeWidget {
+            QTableWidget {
                 background: #ffffff;
                 border: 1px solid #dde3ec;
                 border-radius: 6px;
@@ -1960,117 +1956,6 @@ class JetsonControlPanel(QMainWindow):
                 rows.append(name_item.data(Qt.UserRole) or {})
         return rows
 
-    def _dir_tree_label(self, path):
-        text = str(path or "")
-        if not text:
-            return "/"
-        if "\\" in text:
-            item_path = Path(text)
-            return item_path.name or str(item_path)
-        cleaned = text.rstrip("/")
-        return cleaned.rsplit("/", 1)[-1] or "/"
-
-    def _dir_tree_item(self, path, loaded=False, maybe_has_children=False):
-        item = QTreeWidgetItem([self._dir_tree_label(path)])
-        item.setData(0, Qt.UserRole, str(path))
-        item.setData(0, Qt.UserRole + 1, bool(loaded))
-        if maybe_has_children and not loaded:
-            item.addChild(QTreeWidgetItem(["加载中..."]))
-        return item
-
-    def _local_child_dirs(self, path):
-        try:
-            children = [child for child in Path(path).iterdir() if child.is_dir()]
-        except OSError:
-            return []
-        return sorted(children, key=lambda child: child.name.lower())
-
-    def _local_has_child_dirs(self, path):
-        try:
-            return any(child.is_dir() for child in Path(path).iterdir())
-        except OSError:
-            return False
-
-    def _refresh_local_dir_tree(self, current_path, rows):
-        if self.local_dir_tree is None:
-            return
-        self.local_dir_tree.blockSignals(True)
-        self.local_dir_tree.clear()
-        root = self._dir_tree_item(str(current_path), loaded=True)
-        for row in rows:
-            if row.get("name") == ".." or not row.get("is_dir"):
-                continue
-            child_path = row.get("path", "")
-            root.addChild(self._dir_tree_item(
-                child_path,
-                loaded=False,
-                maybe_has_children=self._local_has_child_dirs(child_path),
-            ))
-        self.local_dir_tree.addTopLevelItem(root)
-        root.setExpanded(True)
-        self.local_dir_tree.setCurrentItem(root)
-        self.local_dir_tree.blockSignals(False)
-
-    def _refresh_remote_dir_tree(self, current_path, rows):
-        if self.remote_dir_tree is None:
-            return
-        self.remote_tree_nodes_by_path = {}
-        self.remote_dir_tree.blockSignals(True)
-        self.remote_dir_tree.clear()
-        root = self._dir_tree_item(current_path, loaded=True)
-        self.remote_tree_nodes_by_path[str(current_path)] = root
-        for row in rows:
-            if row.get("name") == ".." or not row.get("is_dir"):
-                continue
-            child_path = row.get("path", "")
-            child = self._dir_tree_item(child_path, loaded=False, maybe_has_children=True)
-            root.addChild(child)
-            self.remote_tree_nodes_by_path[str(child_path)] = child
-        self.remote_dir_tree.addTopLevelItem(root)
-        root.setExpanded(True)
-        self.remote_dir_tree.setCurrentItem(root)
-        self.remote_dir_tree.blockSignals(False)
-
-    def local_dir_tree_expanded(self, item):
-        if item is None or item.data(0, Qt.UserRole + 1):
-            return
-        path = item.data(0, Qt.UserRole)
-        item.takeChildren()
-        for child in self._local_child_dirs(path):
-            item.addChild(self._dir_tree_item(
-                str(child),
-                loaded=False,
-                maybe_has_children=self._local_has_child_dirs(child),
-            ))
-        item.setData(0, Qt.UserRole + 1, True)
-
-    def remote_dir_tree_expanded(self, item):
-        if item is None or item.data(0, Qt.UserRole + 1):
-            return
-        path = item.data(0, Qt.UserRole)
-        if self.sftp_worker and self.sftp_worker.isRunning():
-            if self.files_summary_label:
-                self.files_summary_label.setText("SFTP 正在执行，稍后再展开远端目录。")
-            return
-        self.remote_tree_nodes_by_path[str(path)] = item
-        self._start_sftp_worker("list_dirs", {"remote_path": path})
-
-    def local_dir_tree_activated(self, item, _column):
-        if item is None:
-            return
-        path = item.data(0, Qt.UserRole)
-        if path:
-            self.local_file_path_edit.setText(str(path))
-            self.refresh_local_files()
-
-    def remote_dir_tree_activated(self, item, _column):
-        if item is None:
-            return
-        path = item.data(0, Qt.UserRole)
-        if path:
-            self.remote_file_path_edit.setText(str(path))
-            self.refresh_remote_files()
-
     def _select_context_file_row(self, table, pos):
         if table is None:
             return []
@@ -2233,7 +2118,6 @@ class JetsonControlPanel(QMainWindow):
             except OSError:
                 pass
         self._set_file_table_rows(self.local_files_table, rows)
-        self._refresh_local_dir_tree(path, rows)
         if self.files_summary_label:
             self.files_summary_label.setText("本地 {}: {} 项".format(path, max(len(rows) - 1, 0)))
 
@@ -2283,7 +2167,6 @@ class JetsonControlPanel(QMainWindow):
         self.pending_sftp_refresh = None
         self.sftp_worker = SftpWorker(remote, action, payload, password=password if password is not None else self.sftp_password, parent=self)
         self.sftp_worker.listed.connect(self._sftp_listed)
-        self.sftp_worker.tree_listed.connect(self._sftp_tree_listed)
         self.sftp_worker.progress.connect(self._sftp_progress)
         self.sftp_worker.file_progress.connect(self._sftp_file_progress)
         self.sftp_worker.message.connect(self._sftp_message)
@@ -2300,22 +2183,8 @@ class JetsonControlPanel(QMainWindow):
     def _sftp_listed(self, path, rows):
         self.remote_file_path_edit.setText(path)
         self._set_file_table_rows(self.remote_files_table, rows)
-        self._refresh_remote_dir_tree(path, rows)
         if self.files_summary_label:
             self.files_summary_label.setText("远端 {}: {} 项".format(path, max(len(rows) - 1, 0)))
-
-    def _sftp_tree_listed(self, path, rows):
-        item = self.remote_tree_nodes_by_path.get(str(path))
-        if item is None:
-            return
-        item.takeChildren()
-        for row in rows:
-            child_path = row.get("path", "")
-            child = self._dir_tree_item(child_path, loaded=False, maybe_has_children=True)
-            item.addChild(child)
-            self.remote_tree_nodes_by_path[str(child_path)] = child
-        item.setData(0, Qt.UserRole + 1, True)
-        item.setExpanded(True)
 
     def _sftp_progress(self, message, index, total):
         if self.files_summary_label:

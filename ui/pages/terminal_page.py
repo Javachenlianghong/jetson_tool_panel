@@ -14,7 +14,6 @@ from PyQt5.QtWidgets import (
     QShortcut,
     QSplitter,
     QTableWidget,
-    QTreeWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -55,15 +54,6 @@ def _build_file_table(minimum_height=120):
     table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
     table.setMinimumHeight(minimum_height)
     return table
-
-
-def _build_dir_tree():
-    tree = QTreeWidget()
-    tree.setHeaderLabel("目录树")
-    tree.setAlternatingRowColors(True)
-    tree.setUniformRowHeights(True)
-    tree.setMinimumHeight(110)
-    return tree
 
 
 def _build_session_bar(window):
@@ -135,23 +125,12 @@ def _build_remote_files_panel(window):
     action_row.addStretch(1)
     layout.addLayout(action_row)
 
-    browser_splitter = QSplitter(Qt.Vertical)
-    browser_splitter.setChildrenCollapsible(False)
-    browser_splitter.setHandleWidth(6)
-
-    window.remote_dir_tree = _build_dir_tree()
-    window.remote_dir_tree.itemExpanded.connect(window.remote_dir_tree_expanded)
-    window.remote_dir_tree.itemDoubleClicked.connect(window.remote_dir_tree_activated)
-    browser_splitter.addWidget(window.remote_dir_tree)
-
     window.remote_files_table = _build_file_table()
     window.remote_files_table.itemDoubleClicked.connect(window.remote_file_item_activated)
     window.remote_files_table.setContextMenuPolicy(Qt.CustomContextMenu)
     window.remote_files_table.customContextMenuRequested.connect(window.remote_files_context_menu)
     window.remote_files_table.itemSelectionChanged.connect(window.remote_file_selection_changed)
-    browser_splitter.addWidget(window.remote_files_table)
-    browser_splitter.setSizes([140, 320])
-    layout.addWidget(browser_splitter, 1)
+    layout.addWidget(window.remote_files_table, 1)
 
     bookmark_row = QHBoxLayout()
     bookmark_row.setSpacing(6)
@@ -189,23 +168,12 @@ def _build_local_files_panel(window):
     action_row.addStretch(1)
     layout.addLayout(action_row)
 
-    browser_splitter = QSplitter(Qt.Vertical)
-    browser_splitter.setChildrenCollapsible(False)
-    browser_splitter.setHandleWidth(6)
-
-    window.local_dir_tree = _build_dir_tree()
-    window.local_dir_tree.itemExpanded.connect(window.local_dir_tree_expanded)
-    window.local_dir_tree.itemDoubleClicked.connect(window.local_dir_tree_activated)
-    browser_splitter.addWidget(window.local_dir_tree)
-
     window.local_files_table = _build_file_table()
     window.local_files_table.itemDoubleClicked.connect(window.local_file_item_activated)
     window.local_files_table.setContextMenuPolicy(Qt.CustomContextMenu)
     window.local_files_table.customContextMenuRequested.connect(window.local_files_context_menu)
     window.local_files_table.itemSelectionChanged.connect(window.local_file_selection_changed)
-    browser_splitter.addWidget(window.local_files_table)
-    browser_splitter.setSizes([130, 300])
-    layout.addWidget(browser_splitter, 1)
+    layout.addWidget(window.local_files_table, 1)
     return _panel("本地文件", layout)
 
 
@@ -231,8 +199,6 @@ def build_terminal_page(window):
 
     window.local_files_table = None
     window.remote_files_table = None
-    window.local_dir_tree = None
-    window.remote_dir_tree = None
     window.files_summary_label = None
     window.files_table = None
 
