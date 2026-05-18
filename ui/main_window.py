@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt5.QtCore import QSettings, QTimer, Qt
-from PyQt5.QtGui import QFont, QTextCursor
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
@@ -43,7 +43,7 @@ from core.paths import DEFAULTS, PATHS
 from core.settings import settings_bool
 from core.task_history import TaskHistoryStore
 from core.ssh_workers import SftpWorker, SshTerminalWorker
-from core.terminal_filter import strip_ansi_sequences
+from core.terminal_filter import PlainTerminalBuffer
 from services import device_health_service, display_service, paramiko_service, proxy_service, remote_ops_service, ssh_service
 from ui.pages.display_page import build_display_page
 from ui.pages.devices_page import build_devices_page
@@ -176,6 +176,8 @@ class JetsonControlPanel(QMainWindow):
         self.service_status_text = None
         self.terminal_status_label = None
         self.terminal_output_edit = None
+        self.terminal_export_display_check = None
+        self.terminal_buffer = PlainTerminalBuffer()
         self.terminal_worker = None
         self.terminal_password = None
         self.health_refresh_button = None
@@ -1571,7 +1573,9 @@ class JetsonControlPanel(QMainWindow):
         if self.terminal_status_label:
             self.terminal_status_label.setText("连接中...")
         if self.terminal_output_edit:
-            self.terminal_output_edit.appendPlainText("[连接] {}".format(remote))
+            terminal_text = self.terminal_buffer.to_text()
+            prefix = "\n" if terminal_text and not terminal_text.endswith("\n") else ""
+            self._terminal_append_text("{}[连接] {}\n".format(prefix, remote))
         self.terminal_worker = SshTerminalWorker(remote, password=password, parent=self)
         self.terminal_worker.output.connect(self._terminal_output)
         self.terminal_worker.connected.connect(self._terminal_connected)
@@ -1603,26 +1607,26 @@ class JetsonControlPanel(QMainWindow):
             self.terminal_worker.send_interrupt()
 
     def terminal_clear(self):
+        self.terminal_buffer.clear()
         if self.terminal_output_edit:
             self.terminal_output_edit.clear()
+
+    def _terminal_append_text(self, text):
+        self.terminal_buffer.feed(text)
+        if self.terminal_output_edit is None:
+            return
+        self.terminal_output_edit.setPlainText(self.terminal_buffer.to_text())
+        cursor = self.terminal_output_edit.textCursor()
+        cursor.setPosition(self.terminal_buffer.cursor_offset())
+        self.terminal_output_edit.setTextCursor(cursor)
+        self.terminal_output_edit.verticalScrollBar().setValue(self.terminal_output_edit.verticalScrollBar().maximum())
 
     def _terminal_output(self, text):
         if "[host key]" in text:
             for line in str(text).splitlines():
                 if "[host key]" in line:
                     self._append_log("SSH 终端: " + line)
-        if self.terminal_output_edit is None:
-            return
-        text = strip_ansi_sequences(text)
-        self.terminal_output_edit.moveCursor(QTextCursor.End)
-        for char in text:
-            if char in ("\b", "\x7f"):
-                self.terminal_output_edit.textCursor().deletePreviousChar()
-            elif char == "\r" or char == "\x07":
-                continue
-            elif char == "\t" or char == "\n" or ord(char) >= 32:
-                self.terminal_output_edit.insertPlainText(char)
-        self.terminal_output_edit.verticalScrollBar().setValue(self.terminal_output_edit.verticalScrollBar().maximum())
+        self._terminal_append_text(text)
 
     def _terminal_connected(self, display):
         self.terminal_password = self.terminal_worker.password if self.terminal_worker else self.terminal_password
@@ -1652,8 +1656,7 @@ class JetsonControlPanel(QMainWindow):
     def _terminal_failed(self, error):
         if self.terminal_status_label:
             self.terminal_status_label.setText("连接失败")
-        if self.terminal_output_edit:
-            self.terminal_output_edit.appendPlainText("\n[错误] {}".format(error))
+        self._terminal_append_text("\n[错误] {}\n".format(error))
         self._append_log("SSH 终端错误: " + str(error))
 
     def _terminal_disconnected(self):
