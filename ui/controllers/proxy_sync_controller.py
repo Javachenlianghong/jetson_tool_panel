@@ -5,9 +5,10 @@ import os
 import subprocess
 from pathlib import Path
 
+from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QMessageBox, QTableWidgetItem
 
-from services import ssh_service
+from services import proxy_service, ssh_service
 
 
 class ProxySyncControllerMixin:
@@ -76,6 +77,17 @@ class ProxySyncControllerMixin:
             ssh_service.upload_proxy_script_command(self.paths.jetson_proxy_script, remote),
             cwd=self.paths.app_dir,
         )
+
+    def disable_jetson_proxy_config(self):
+        if not self._remote_or_warn():
+            return
+        self.pending_terminal_command = proxy_service.disable_jetson_proxy_command().strip() + "\n"
+        self._switch_page_by_key("terminal")
+        self._append_log("已准备在 SSH 工作台取消 Jetson 代理配置；如出现 sudo 提示，请输入 Jetson 密码。")
+        if self.terminal_worker and self.terminal_worker.isRunning():
+            QTimer.singleShot(200, self._send_pending_terminal_command)
+        else:
+            self.terminal_connect()
 
     def pull_from_jetson(self):
         remote = self._remote_or_warn()

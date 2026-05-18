@@ -64,8 +64,10 @@ def build_proxy_page(window):
     stop_rule_button.clicked.connect(window.remove_firewall_rule)
     copy_button = QPushButton("复制 Jetson 代理命令")
     copy_button.clicked.connect(window.copy_proxy_command)
+    disable_jetson_proxy_button = QPushButton("取消 Jetson 代理配置")
+    disable_jetson_proxy_button.clicked.connect(window.disable_jetson_proxy_config)
 
-    for button in (enable_button, direct_enable_button, stop_rule_button, copy_button):
+    for button in (enable_button, direct_enable_button, stop_rule_button, copy_button, disable_jetson_proxy_button):
         window.command_buttons.append(button)
         proxy_buttons.addWidget(button)
     proxy_buttons.addStretch(1)

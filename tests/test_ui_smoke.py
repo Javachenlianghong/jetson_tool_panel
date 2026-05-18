@@ -40,6 +40,10 @@ class UiSmokeTest(unittest.TestCase):
             self.assertTrue(hasattr(window, "preview_remote_selected_file"))
             checkbox_texts = [checkbox.text() for checkbox in terminal_page.findChildren(QCheckBox)]
             self.assertIn("连接后导出 DISPLAY", checkbox_texts)
+            proxy_page = window.page_stack.widget(window.page_key_to_index["proxy"])
+            proxy_button_texts = [button.text() for button in proxy_page.findChildren(QPushButton)]
+            self.assertIn("取消 Jetson 代理配置", proxy_button_texts)
+            self.assertTrue(hasattr(window, "disable_jetson_proxy_config"))
             model_page = window.page_stack.widget(window.page_key_to_index["model"])
             model_button_texts = [button.text() for button in model_page.findChildren(QPushButton)]
             self.assertIn("选择", model_button_texts)
