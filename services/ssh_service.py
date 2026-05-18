@@ -6,6 +6,9 @@ import sys
 from core.command_runner import quote_for_powershell
 
 
+DONE_MARKER = "__JTP_DONE__"
+
+
 def ssh_options(batch_mode=True):
     options = ["-n"]
     if batch_mode:
@@ -20,13 +23,23 @@ def ssh_options(batch_mode=True):
 
 
 def test_ssh_command(remote):
-    return ["ssh"] + ssh_options(batch_mode=True) + [
-        remote,
-        "echo Jetson SSH OK && uname -a",
-    ]
+    return remote_ssh_command(remote, "echo Jetson SSH OK && uname -a", done_marker=True)
 
 
-def remote_ssh_command(remote, remote_command, batch_mode=True):
+def remote_done_marker_command(remote_command, marker=DONE_MARKER):
+    return r"""
+__jtp_status=0
+(
+__REMOTE_COMMAND__
+) || __jtp_status=$?
+printf '\n__MARKER__:%s\n' "$__jtp_status"
+exit "$__jtp_status"
+""".replace("__REMOTE_COMMAND__", str(remote_command or "")).replace("__MARKER__", marker)
+
+
+def remote_ssh_command(remote, remote_command, batch_mode=True, done_marker=False):
+    if done_marker:
+        remote_command = remote_done_marker_command(remote_command)
     return ["ssh"] + ssh_options(batch_mode=batch_mode) + [remote, remote_command]
 
 

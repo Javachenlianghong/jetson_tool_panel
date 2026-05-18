@@ -50,10 +50,12 @@ class CommandWorker(QThread):
     finished_ok = pyqtSignal(int)
     failed_to_start = pyqtSignal(str)
 
-    def __init__(self, command, cwd=None, parent=None):
+    def __init__(self, command, cwd=None, done_marker=None, stop_on_done_marker=False, parent=None):
         super().__init__(parent)
         self.command = command
         self.cwd = str(cwd) if cwd else None
+        self.done_marker = str(done_marker or "")
+        self.stop_on_done_marker = bool(stop_on_done_marker)
         self._process = None
 
     def run(self):
@@ -76,11 +78,35 @@ class CommandWorker(QThread):
             return
 
         assert self._process.stdout is not None
-        for line in self._process.stdout:
-            self.output.emit(decode_process_output(line))
+        marker_return_code = None
+        try:
+            for line in self._process.stdout:
+                decoded = decode_process_output(line)
+                parsed_marker_code = self._parse_done_marker(decoded)
+                if parsed_marker_code is not None:
+                    marker_return_code = parsed_marker_code
+                    if self.stop_on_done_marker:
+                        self.terminate_process()
+                        break
+                    continue
+                self.output.emit(decoded)
+        finally:
+            self._process.stdout.close()
 
         return_code = self._process.wait()
-        self.finished_ok.emit(return_code)
+        self.finished_ok.emit(marker_return_code if marker_return_code is not None else return_code)
+
+    def _parse_done_marker(self, line):
+        if not self.done_marker:
+            return None
+        text = str(line or "").strip()
+        prefix = self.done_marker + ":"
+        if not text.startswith(prefix):
+            return None
+        try:
+            return int(text[len(prefix):].strip())
+        except ValueError:
+            return 0
 
     def terminate_process(self, kill_after_seconds=2):
         if self._process and self._process.poll() is None:
