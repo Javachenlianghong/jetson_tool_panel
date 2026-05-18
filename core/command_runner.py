@@ -1,5 +1,6 @@
 """Background command runner and shell quoting helpers."""
 
+import locale
 import os
 import subprocess
 
@@ -18,6 +19,30 @@ def format_command(command):
     if os.name == "nt":
         return subprocess.list2cmdline(command)
     return " ".join(quote_for_bash(part) for part in command)
+
+
+def decode_process_output(raw_line):
+    if isinstance(raw_line, str):
+        return raw_line.rstrip("\r\n")
+
+    encodings = ["utf-8", locale.getpreferredencoding(False), "gb18030"]
+    if os.name == "nt":
+        encodings.append("mbcs")
+
+    tried = set()
+    for encoding in encodings:
+        if not encoding:
+            continue
+        key = encoding.lower()
+        if key in tried:
+            continue
+        tried.add(key)
+        try:
+            return raw_line.decode(encoding).rstrip("\r\n")
+        except (LookupError, UnicodeDecodeError):
+            pass
+
+    return raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
 
 
 class CommandWorker(QThread):
@@ -42,8 +67,7 @@ class CommandWorker(QThread):
                 cwd=self.cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                bufsize=1,
+                bufsize=0,
                 creationflags=creationflags,
             )
         except Exception as exc:
@@ -52,7 +76,7 @@ class CommandWorker(QThread):
 
         assert self._process.stdout is not None
         for line in self._process.stdout:
-            self.output.emit(line.rstrip("\r\n"))
+            self.output.emit(decode_process_output(line))
 
         return_code = self._process.wait()
         self.finished_ok.emit(return_code)
