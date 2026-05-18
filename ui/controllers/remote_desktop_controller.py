@@ -163,8 +163,9 @@ class RemoteDesktopControllerMixin:
             return False
         output = "\n".join(self.current_command_output).lower()
         if "x11vnc not found" in output or "x11vnc is missing" in output:
+            self.disconnect_remote_desktop()
             self._set_remote_desktop_status(
-                "Jetson 缺少 x11vnc：点击“终端安装 x11vnc”，在本软件 SSH 工作台输入 sudo 密码"
+                "当前 SSH 目标未安装 x11vnc：点击“终端安装 x11vnc”，输入 sudo 密码并等安装完成"
             )
         elif "sudo password is required" in output or "no tty present" in output:
             self._set_remote_desktop_status("安装需要 sudo 密码：点击“终端安装 x11vnc”并在 SSH 工作台输入密码")

@@ -1015,7 +1015,7 @@ def diagnose_command_output(lines):
     if "cannot open display" in lower:
         hints.append("DISPLAY 无法打开：确认 Jetson 桌面已登录，并在 SSH 会话导出 DISPLAY=:0 和 XAUTHORITY=/home/jetson/.Xauthority。")
     if "x11vnc not found" in lower or "x11vnc is missing" in lower:
-        hints.append("Jetson 缺少 x11vnc：在远程桌面页点击“安装 x11vnc”；如果 sudo 需要密码，在本软件的 SSH 工作台执行 sudo apt-get update && sudo apt-get install -y x11vnc。")
+        hints.append("当前 SSH 目标未安装 x11vnc：在远程桌面页点击“终端安装 x11vnc”，输入 sudo 密码，并确认安装输出里不再是 Installed: (none)。")
     if "sudo password is required" in lower:
         hints.append("安装 x11vnc 需要 sudo 密码：切到 SSH 工作台执行 sudo apt-get update && sudo apt-get install -y x11vnc。")
     if "trtexec not found" in lower or "bash: trtexec: command not found" in lower:

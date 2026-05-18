@@ -96,6 +96,7 @@ class RemoteOpsServiceTest(unittest.TestCase):
         hints = remote_ops_service.diagnose_command_output(["ERROR: x11vnc not found."])
 
         self.assertTrue(any("x11vnc" in hint for hint in hints))
+        self.assertTrue(any("终端安装 x11vnc" in hint for hint in hints))
         self.assertFalse(any("模型文件" in hint for hint in hints))
 
     def test_parse_runtime_output_extracts_fps_and_display_error(self):

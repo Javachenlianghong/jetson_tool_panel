@@ -3,10 +3,11 @@
 import queue
 import socket
 import struct
+import time
 
 from PyQt5.QtCore import QPoint, Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QImage, QPainter
-from PyQt5.QtWidgets import QWidget
+from PyQt5.QtWidgets import QSizePolicy, QWidget
 
 from services import paramiko_service
 
@@ -58,11 +59,7 @@ class VncClientWorker(QThread):
             transport = self._client.get_transport()
             if transport is None:
                 raise RuntimeError("SSH transport is not available.")
-            self._channel = transport.open_channel(
-                "direct-tcpip",
-                ("127.0.0.1", self.remote_port),
-                ("127.0.0.1", 0),
-            )
+            self._channel = self._open_vnc_channel(transport)
             self._channel.settimeout(0.5)
             self.status.emit("已连接 VNC: {}:{}".format(target.display, self.remote_port))
             self._handshake()
@@ -96,6 +93,28 @@ class VncClientWorker(QThread):
             self._close()
             self.disconnected.emit()
 
+    def _open_vnc_channel(self, transport):
+        last_error = None
+        deadline = time.monotonic() + 6
+        attempt = 0
+        while self._running and time.monotonic() < deadline:
+            attempt += 1
+            try:
+                return transport.open_channel(
+                    "direct-tcpip",
+                    ("127.0.0.1", self.remote_port),
+                    ("127.0.0.1", 0),
+                )
+            except Exception as exc:
+                last_error = exc
+                message = str(exc).lower()
+                if "connection refused" not in message and "connect failed" not in message:
+                    raise
+                if attempt == 1:
+                    self.status.emit("VNC 端口尚未就绪，正在重试...")
+                time.sleep(0.4)
+        raise RuntimeError("VNC 端口 127.0.0.1:{} 未监听: {}".format(self.remote_port, last_error))
+
     def _handshake(self):
         version = self._read_exact(12)
         if not version.startswith(b"RFB "):
@@ -116,7 +135,7 @@ class VncClientWorker(QThread):
         self._send(b"\x01")
         server_init = self._read_exact(24)
         self._width, self._height = struct.unpack(">HH", server_init[:4])
-        name_length = struct.unpack(">I", self._read_exact(4))[0]
+        name_length = struct.unpack(">I", server_init[20:24])[0]
         name = self._read_exact(name_length).decode("utf-8", errors="replace") if name_length else "VNC"
         self._image = QImage(self._width, self._height, QImage.Format_RGB32)
         self._image.fill(Qt.black)
@@ -232,7 +251,8 @@ class VncDisplayWidget(QWidget):
         self._image = QImage()
         self._frame_size = (0, 0)
         self._button_mask = 0
-        self.setMinimumHeight(320)
+        self.setMinimumHeight(420)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
 

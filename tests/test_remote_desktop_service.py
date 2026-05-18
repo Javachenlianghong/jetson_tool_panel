@@ -12,6 +12,14 @@ class RemoteDesktopServiceTest(unittest.TestCase):
         self.assertIn("-localhost", command)
         self.assertIn("-nopw", command)
         self.assertIn("-rfbport \"$port\"", command)
+        self.assertIn("/usr/bin/x11vnc", command)
+        self.assertIn("nohup \"$x11vnc_bin\"", command)
+        self.assertIn("PATH=$PATH", command)
+        self.assertIn("probe_vnc_port", command)
+        self.assertIn("127.0.0.1", command)
+        self.assertIn("not accepting connections", command)
+        self.assertIn("apt-cache policy x11vnc", command)
+        self.assertIn("terminal install button", command)
         self.assertIn("5901", command)
         self.assertIn("/home/jetson/.Xauthority", command)
 
@@ -27,6 +35,7 @@ class RemoteDesktopServiceTest(unittest.TestCase):
         self.assertIn("apt-get install -y x11vnc", command)
         self.assertIn("sudo -n", command)
         self.assertIn("sudo password is required", command)
+        self.assertIn("x11vnc already installed: $x11vnc_bin", command)
 
 
 if __name__ == "__main__":
