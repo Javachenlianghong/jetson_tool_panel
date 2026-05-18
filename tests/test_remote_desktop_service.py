@@ -10,6 +10,8 @@ class RemoteDesktopServiceTest(unittest.TestCase):
         self.assertIn("x11vnc", command)
         self.assertIn("x11vnc not found", command)
         self.assertIn("-localhost", command)
+        self.assertIn("-no6", command)
+        self.assertIn("-noipv6", command)
         self.assertIn("-nopw", command)
         self.assertIn("-rfbport \"$port\"", command)
         self.assertIn("/usr/bin/x11vnc", command)
@@ -18,15 +20,30 @@ class RemoteDesktopServiceTest(unittest.TestCase):
         self.assertIn("probe_vnc_port", command)
         self.assertIn("127.0.0.1", command)
         self.assertIn("not accepting connections", command)
+        self.assertIn("clear_stale_x11vnc_port", command)
+        self.assertIn("vnc_port_owner_pids", command)
+        self.assertIn("configured_x11vnc_pids", command)
+        self.assertIn("terminate_pid", command)
+        self.assertIn("Force killing stale x11vnc", command)
+        self.assertIn("Stopping stale x11vnc", command)
+        self.assertIn("localhost:$port", command)
         self.assertIn("apt-cache policy x11vnc", command)
         self.assertIn("terminal install button", command)
         self.assertIn("5901", command)
         self.assertIn("/home/jetson/.Xauthority", command)
 
+    def test_start_command_can_scale_vnc_desktop(self):
+        command = remote_desktop_service.x11vnc_start_command(":0", "/home/jetson/.Xauthority", 5901, "17/20")
+
+        self.assertIn("scale_option='17/20'", command)
+        self.assertIn("-scale $scale_option", command)
+        self.assertIn("scale=$scale_option", command)
+
     def test_stop_command_targets_port(self):
         command = remote_desktop_service.x11vnc_stop_command(5902)
 
-        self.assertIn("pkill", command)
+        self.assertIn("clear_stale_x11vnc_port", command)
+        self.assertIn("Force killing stale x11vnc", command)
         self.assertIn("5902", command)
 
     def test_install_command_is_apt_based(self):

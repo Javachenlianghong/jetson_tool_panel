@@ -99,6 +99,11 @@ class RemoteOpsServiceTest(unittest.TestCase):
         self.assertTrue(any("终端安装 x11vnc" in hint for hint in hints))
         self.assertFalse(any("模型文件" in hint for hint in hints))
 
+    def test_diagnose_command_output_handles_busy_vnc_port(self):
+        hints = remote_ops_service.diagnose_command_output(["Error: could not obtain listening port."])
+
+        self.assertTrue(any("VNC 端口被占用" in hint for hint in hints))
+
     def test_parse_runtime_output_extracts_fps_and_display_error(self):
         ok = remote_ops_service.parse_runtime_output(["FPS: 18.7", "PID: 1234"])
         self.assertEqual(ok["status"], "ok")
