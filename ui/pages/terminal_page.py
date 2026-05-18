@@ -3,6 +3,7 @@ from PyQt5.QtGui import QColor, QFont, QKeySequence, QPainter
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -166,6 +167,14 @@ def _build_session_bar(window):
     sync_button = _tool_button("同步到 Jetson", window.sync_to_jetson, primary=True)
     window.command_buttons.append(sync_button)
     layout.addWidget(sync_button)
+    layout.addSpacing(10)
+
+    window.terminal_export_display_check = QCheckBox("连接后导出 DISPLAY")
+    window.terminal_export_display_check.setToolTip(
+        "SSH 终端连接成功后发送 export DISPLAY=:0 和 export XAUTHORITY=/home/jetson/.Xauthority"
+    )
+    window.terminal_export_display_check.clicked.connect(lambda _checked: window._save_settings())
+    layout.addWidget(window.terminal_export_display_check)
     layout.addSpacing(10)
 
     window.terminal_status_label = QLabel("未连接")

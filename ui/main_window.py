@@ -1228,6 +1228,9 @@ class JetsonControlPanel(QMainWindow):
         self.refresh_rate_spin.setValue(self._setting_int("display/refresh_rate", 60))
         self.display_env_edit.setText(str(self.settings.value("display/display_env", ":0")))
         self.xauthority_edit.setText(str(self.settings.value("display/xauthority", "$HOME/.Xauthority")))
+        self.terminal_export_display_check.setChecked(
+            settings_bool(self.settings.value("terminal/export_display", False), False)
+        )
         self.framebuffer_fallback_check.setChecked(
             settings_bool(self.settings.value("display/framebuffer_fallback"), True)
         )
@@ -1292,6 +1295,7 @@ class JetsonControlPanel(QMainWindow):
         self.settings.setValue("display/refresh_rate", self.refresh_rate_spin.value())
         self.settings.setValue("display/display_env", self.display_env_edit.text().strip())
         self.settings.setValue("display/xauthority", self.xauthority_edit.text().strip())
+        self.settings.setValue("terminal/export_display", self.terminal_export_display_check.isChecked())
         self.settings.setValue("display/framebuffer_fallback", self.framebuffer_fallback_check.isChecked())
         self.settings.setValue("health/auto_refresh", self.health_auto_check.isChecked())
         self.settings.setValue("health/interval", self.health_interval_combo.currentText().strip())
@@ -1640,8 +1644,21 @@ class JetsonControlPanel(QMainWindow):
         self._append_log("SSH 终端已连接: " + display)
         if self.terminal_output_edit:
             self.terminal_output_edit.setFocus()
+        if self.terminal_export_display_check and self.terminal_export_display_check.isChecked():
+            QTimer.singleShot(300, self._send_terminal_display_exports)
         if self.remote_files_table is not None:
             QTimer.singleShot(200, self.refresh_remote_files)
+
+    def _send_terminal_display_exports(self):
+        if not self.terminal_export_display_check or not self.terminal_export_display_check.isChecked():
+            return
+        if not self.terminal_worker or not self.terminal_worker.isRunning():
+            return
+        self.terminal_worker.send_text(
+            "export DISPLAY=:0\n"
+            "export XAUTHORITY=/home/jetson/.Xauthority\n"
+        )
+        self._append_log("SSH 终端已发送图形环境变量: DISPLAY=:0, XAUTHORITY=/home/jetson/.Xauthority")
 
     def _terminal_auth_failed(self, error):
         if self.terminal_worker and self.terminal_worker.password:

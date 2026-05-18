@@ -8,7 +8,7 @@ class UiSmokeTest(unittest.TestCase):
     def test_main_window_contains_terminal_and_double_pane_files(self):
         try:
             from PyQt5.QtCore import Qt
-            from PyQt5.QtWidgets import QApplication, QPushButton
+            from PyQt5.QtWidgets import QApplication, QCheckBox, QPushButton
             from ui.main_window import JetsonControlPanel
         except Exception as exc:  # pragma: no cover - only used when Qt is unavailable.
             self.skipTest(str(exc))
@@ -29,6 +29,10 @@ class UiSmokeTest(unittest.TestCase):
             terminal_page = window.page_stack.widget(window.page_key_to_index["terminal"])
             button_texts = [button.text() for button in terminal_page.findChildren(QPushButton)]
             self.assertIn("同步到 Jetson", button_texts)
+            self.assertIn("本地预览", button_texts)
+            self.assertTrue(hasattr(window, "preview_remote_selected_file"))
+            checkbox_texts = [checkbox.text() for checkbox in terminal_page.findChildren(QCheckBox)]
+            self.assertIn("连接后导出 DISPLAY", checkbox_texts)
         finally:
             window.deleteLater()
             app.processEvents()
