@@ -18,7 +18,9 @@ set -e
 __DISPLAY_ENV__
 port=__PORT__
 if ! command -v x11vnc >/dev/null 2>&1; then
-    echo "ERROR: x11vnc not found. Install it with: sudo apt install -y x11vnc"
+    echo "ERROR: x11vnc not found."
+    echo "Install it in this panel with the remote desktop install button, or run:"
+    echo "  sudo apt-get update && sudo apt-get install -y x11vnc"
     exit 127
 fi
 if [ -z "${DISPLAY:-}" ]; then
@@ -80,8 +82,18 @@ if command -v x11vnc >/dev/null 2>&1; then
 fi
 if command -v apt-get >/dev/null 2>&1; then
     echo "Installing x11vnc with apt-get..."
-    sudo apt-get update
-    sudo apt-get install -y x11vnc
+    if [ "$(id -u)" = "0" ]; then
+        apt-get update
+        apt-get install -y x11vnc
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        sudo -n apt-get update
+        sudo -n apt-get install -y x11vnc
+    else
+        echo "ERROR: sudo password is required."
+        echo "Open this panel's SSH workbench and run:"
+        echo "  sudo apt-get update && sudo apt-get install -y x11vnc"
+        exit 126
+    fi
     command -v x11vnc
     exit 0
 fi

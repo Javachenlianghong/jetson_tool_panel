@@ -8,6 +8,7 @@ class RemoteDesktopServiceTest(unittest.TestCase):
         command = remote_desktop_service.x11vnc_start_command(":0", "/home/jetson/.Xauthority", 5901)
 
         self.assertIn("x11vnc", command)
+        self.assertIn("x11vnc not found", command)
         self.assertIn("-localhost", command)
         self.assertIn("-nopw", command)
         self.assertIn("-rfbport \"$port\"", command)
@@ -24,6 +25,8 @@ class RemoteDesktopServiceTest(unittest.TestCase):
         command = remote_desktop_service.x11vnc_install_command()
 
         self.assertIn("apt-get install -y x11vnc", command)
+        self.assertIn("sudo -n", command)
+        self.assertIn("sudo password is required", command)
 
 
 if __name__ == "__main__":

@@ -145,3 +145,19 @@ class RemoteDesktopControllerMixin:
             self._set_remote_desktop_status("x11vnc 安装命令已完成")
             return True
         return False
+
+    def handle_remote_desktop_command_failure(self, title, return_code):
+        if title not in ("启动远程桌面服务", "安装远程桌面组件", "查询远程桌面服务"):
+            return False
+        output = "\n".join(self.current_command_output).lower()
+        if "x11vnc not found" in output or "x11vnc is missing" in output:
+            self._set_remote_desktop_status(
+                "Jetson 缺少 x11vnc：点击“安装 x11vnc”，或在 SSH 工作台执行 sudo apt-get install -y x11vnc"
+            )
+        elif "sudo password is required" in output:
+            self._set_remote_desktop_status("安装需要 sudo 密码：请在 SSH 工作台执行日志里的 apt-get 命令")
+        elif return_code == 127:
+            self._set_remote_desktop_status("远程桌面组件缺失，请先安装 x11vnc")
+        else:
+            self._set_remote_desktop_status("远程桌面命令失败，退出码: {}".format(return_code))
+        return True

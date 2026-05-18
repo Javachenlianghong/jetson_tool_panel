@@ -1760,6 +1760,8 @@ class JetsonControlPanel(
             elif title.startswith("服务") and self.service_status_text:
                 self.service_status_text.setPlainText("服务操作失败，请查看底部日志。")
             self._show_command_diagnostics(title)
+            if hasattr(self, "handle_remote_desktop_command_failure"):
+                self.handle_remote_desktop_command_failure(title, return_code)
             self.workflow_queue = []
         self._record_task_history(title, return_code)
         self._sync_command_running_state()

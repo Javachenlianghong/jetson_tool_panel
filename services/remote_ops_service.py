@@ -1014,9 +1014,14 @@ def diagnose_command_output(lines):
     hints = []
     if "cannot open display" in lower:
         hints.append("DISPLAY 无法打开：确认 Jetson 桌面已登录，并在 SSH 会话导出 DISPLAY=:0 和 XAUTHORITY=/home/jetson/.Xauthority。")
+    if "x11vnc not found" in lower or "x11vnc is missing" in lower:
+        hints.append("Jetson 缺少 x11vnc：在远程桌面页点击“安装 x11vnc”；如果 sudo 需要密码，在本软件的 SSH 工作台执行 sudo apt-get update && sudo apt-get install -y x11vnc。")
+    if "sudo password is required" in lower:
+        hints.append("安装 x11vnc 需要 sudo 密码：切到 SSH 工作台执行 sudo apt-get update && sudo apt-get install -y x11vnc。")
     if "trtexec not found" in lower or "bash: trtexec: command not found" in lower:
         hints.append("trtexec 未找到：使用模型页“检测 TensorRT”，或把 /usr/src/tensorrt/bin 加入 PATH。")
-    if "no such file" in lower or "not found" in lower:
+    known_missing_tool = any(tool in lower for tool in ("x11vnc", "trtexec"))
+    if "no such file" in lower or ("not found" in lower and not known_missing_tool):
         hints.append("存在文件不存在提示：检查远端工作目录、模型文件、视频或图片路径。")
     if "out of memory" in lower or "cuda error" in lower or "insufficient workspace" in lower:
         hints.append("内存/显存可能不足：尝试 fp16、降低输入尺寸/batch，关闭占用 GPU 的进程或增加 swap。")

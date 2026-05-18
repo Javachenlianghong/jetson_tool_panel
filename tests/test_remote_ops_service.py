@@ -92,6 +92,12 @@ class RemoteOpsServiceTest(unittest.TestCase):
         hints = remote_ops_service.diagnose_command_output(["Gtk-WARNING **: cannot open display:"])
         self.assertTrue(any("DISPLAY" in hint for hint in hints))
 
+    def test_diagnose_command_output_handles_missing_x11vnc(self):
+        hints = remote_ops_service.diagnose_command_output(["ERROR: x11vnc not found."])
+
+        self.assertTrue(any("x11vnc" in hint for hint in hints))
+        self.assertFalse(any("模型文件" in hint for hint in hints))
+
     def test_parse_runtime_output_extracts_fps_and_display_error(self):
         ok = remote_ops_service.parse_runtime_output(["FPS: 18.7", "PID: 1234"])
         self.assertEqual(ok["status"], "ok")
