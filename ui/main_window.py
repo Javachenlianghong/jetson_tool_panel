@@ -59,7 +59,6 @@ from ui.pages.runtime_page import build_runtime_page
 from ui.pages.service_page import build_service_page
 from ui.pages.terminal_page import build_terminal_page
 from ui.pages.report_page import build_report_page
-from ui.pages.remote_desktop_page import build_remote_desktop_page
 from ui.pages.transfer_page import build_transfer_page
 from ui.pages.workbench_page import build_workbench_page
 from ui.controllers.model_controller import ModelControllerMixin
@@ -200,6 +199,7 @@ class JetsonControlPanel(
         self.terminal_output_edit = None
         self.terminal_export_display_check = None
         self.terminal_quick_command_combo = None
+        self.workbench_three_pane_splitter = None
         self.terminal_buffer = PlainTerminalBuffer()
         self.terminal_worker = None
         self.terminal_password = None
@@ -358,6 +358,8 @@ class JetsonControlPanel(
         for key, _text, _icon, builder in self._flatten_navigation_groups():
             self.page_key_to_index[key] = self.page_stack.count()
             self.page_stack.addWidget(builder(self))
+        if "desktop" not in self.page_key_to_index and "terminal" in self.page_key_to_index:
+            self.page_key_to_index["desktop"] = self.page_key_to_index["terminal"]
 
         self.log_splitter = QSplitter(Qt.Vertical)
         self.log_splitter.setObjectName("MainLogSplitter")
@@ -415,8 +417,7 @@ class JetsonControlPanel(
                     ("workbench", "工作台", style.standardIcon(QStyle.SP_DesktopIcon), build_workbench_page),
                     ("proxy", "代理设置", style.standardIcon(QStyle.SP_DriveNetIcon), build_proxy_page),
                     ("health", "设备状态", style.standardIcon(QStyle.SP_ComputerIcon), build_health_page),
-                    ("terminal", "SSH 工作台", style.standardIcon(QStyle.SP_ComputerIcon), build_terminal_page),
-                    ("desktop", "远程桌面", style.standardIcon(QStyle.SP_DesktopIcon), build_remote_desktop_page),
+                    ("terminal", "文件/SSH/VNC", style.standardIcon(QStyle.SP_ComputerIcon), build_terminal_page),
                     ("runtime", "运行控制", style.standardIcon(QStyle.SP_MediaPlay), build_runtime_page),
                     ("logs", "日志查看", style.standardIcon(QStyle.SP_FileIcon), build_logs_page),
                     ("process", "进程管理", style.standardIcon(QStyle.SP_FileDialogDetailedView), build_process_page),

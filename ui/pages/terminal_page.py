@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -15,10 +16,13 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit,
     QShortcut,
     QSplitter,
+    QSpinBox,
     QTableWidget,
     QVBoxLayout,
     QWidget,
 )
+
+from core.vnc_client import VncDisplayWidget
 
 
 def _tool_button(text, handler, primary=False):
@@ -195,7 +199,7 @@ def _build_session_bar(window):
     window.terminal_status_label.setObjectName("MutedText")
     layout.addWidget(QLabel("会话"))
     layout.addWidget(window.terminal_status_label, 1)
-    return _panel("SSH 会话", layout)
+    return _panel("会话", layout)
 
 
 def _build_terminal_panel(window):
@@ -308,6 +312,147 @@ def _build_transfer_bar(window):
     return _panel("传输", layout)
 
 
+def _command_button(window, text, handler, primary=False):
+    button = _tool_button(text, handler, primary=primary)
+    window.command_buttons.append(button)
+    return button
+
+
+def _build_file_management_panel(window):
+    layout = QVBoxLayout()
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+
+    file_splitter = QSplitter(Qt.Vertical)
+    file_splitter.setChildrenCollapsible(False)
+    file_splitter.setHandleWidth(8)
+    file_splitter.addWidget(_build_remote_files_panel(window))
+    file_splitter.addWidget(_build_local_files_panel(window))
+    file_splitter.setSizes([320, 300])
+
+    layout.addWidget(file_splitter, 1)
+    layout.addWidget(_build_transfer_bar(window), 0)
+    return _panel("文件管理", layout)
+
+
+def _build_ssh_panel(window):
+    layout = QVBoxLayout()
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+    layout.addWidget(_build_session_bar(window), 0)
+    layout.addWidget(_build_terminal_panel(window), 1)
+    return _panel("SSH", layout)
+
+
+def _build_vnc_panel(window):
+    layout = QVBoxLayout()
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+
+    grid = QGridLayout()
+    grid.setHorizontalSpacing(8)
+    grid.setVerticalSpacing(8)
+    window.remote_desktop_display_edit = QLineEdit(":0")
+    window.remote_desktop_display_edit.setMaximumWidth(76)
+    window.remote_desktop_xauthority_edit = QLineEdit("/home/jetson/.Xauthority")
+    window.remote_desktop_port_spin = QSpinBox()
+    window.remote_desktop_port_spin.setRange(5900, 5999)
+    window.remote_desktop_port_spin.setValue(5900)
+    window.remote_desktop_port_spin.setMaximumWidth(82)
+    window.remote_desktop_performance_combo = QComboBox()
+    window.remote_desktop_performance_combo.addItems(["平衡 (75%)", "高清 (85%)", "流畅 (50%)", "清晰 (100%)"])
+    window.remote_desktop_performance_combo.setMaximumWidth(120)
+    window.remote_desktop_status_label = QLabel("未连接")
+    window.remote_desktop_status_label.setObjectName("MutedText")
+
+    grid.addWidget(QLabel("DISPLAY"), 0, 0)
+    grid.addWidget(window.remote_desktop_display_edit, 0, 1)
+    grid.addWidget(QLabel("端口"), 0, 2)
+    grid.addWidget(window.remote_desktop_port_spin, 0, 3)
+    grid.addWidget(QLabel("模式"), 0, 4)
+    grid.addWidget(window.remote_desktop_performance_combo, 0, 5)
+    grid.addWidget(QLabel("XAUTH"), 1, 0)
+    grid.addWidget(window.remote_desktop_xauthority_edit, 1, 1, 1, 3)
+    grid.addWidget(QLabel("状态"), 1, 4)
+    grid.addWidget(window.remote_desktop_status_label, 1, 5)
+    grid.setColumnStretch(3, 1)
+    layout.addLayout(grid)
+
+    install_row = QHBoxLayout()
+    install_row.setSpacing(6)
+    for text, handler, primary in [
+        ("安装 x11vnc", window.install_remote_desktop_service, False),
+        ("终端安装 x11vnc", window.install_remote_desktop_service_in_terminal, False),
+        ("查询服务", window.query_remote_desktop_service, False),
+    ]:
+        install_row.addWidget(_command_button(window, text, handler, primary=primary))
+    install_row.addStretch(1)
+    layout.addLayout(install_row)
+
+    connect_row = QHBoxLayout()
+    connect_row.setSpacing(6)
+    for text, handler, primary in [
+        ("启动并连接", window.start_and_connect_remote_desktop, True),
+        ("仅连接", window.connect_remote_desktop, True),
+        ("断开", window.disconnect_remote_desktop, False),
+        ("停止服务", window.stop_remote_desktop_service, False),
+    ]:
+        connect_row.addWidget(_command_button(window, text, handler, primary=primary))
+    connect_row.addStretch(1)
+    layout.addLayout(connect_row)
+
+    window.remote_desktop_view = VncDisplayWidget()
+    window.remote_desktop_view.setMinimumHeight(260)
+    layout.addWidget(window.remote_desktop_view, 1)
+    return _panel("VNC", layout)
+
+
+def _toggle_splitter_side(splitter, index, button, collapse_text, expand_text, fallback_width):
+    sizes = splitter.sizes()
+    if len(sizes) < 3:
+        return
+    center_index = 1
+    if sizes[index] <= 0:
+        restore_width = int(button.property("restoreWidth") or fallback_width)
+        sizes[index] = max(restore_width, 180)
+        sizes[center_index] = max(260, sizes[center_index] - sizes[index])
+        button.setText(collapse_text)
+    else:
+        button.setProperty("restoreWidth", max(sizes[index], fallback_width))
+        sizes[center_index] += sizes[index]
+        sizes[index] = 0
+        button.setText(expand_text)
+    splitter.setSizes(sizes)
+
+
+def _build_three_pane_toolbar(main_splitter):
+    layout = QHBoxLayout()
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+
+    file_button = QPushButton("收起文件管理")
+    file_button.setObjectName("ToggleFilePaneButton")
+    file_button.clicked.connect(
+        lambda _checked=False: _toggle_splitter_side(
+            main_splitter, 0, file_button, "收起文件管理", "展开文件管理", 420
+        )
+    )
+
+    vnc_button = QPushButton("收起 VNC")
+    vnc_button.setObjectName("ToggleVncPaneButton")
+    vnc_button.clicked.connect(
+        lambda _checked=False: _toggle_splitter_side(main_splitter, 2, vnc_button, "收起 VNC", "展开 VNC", 520)
+    )
+
+    hint = QLabel("三块工作区：文件管理 / SSH / VNC")
+    hint.setObjectName("MutedText")
+    layout.addWidget(file_button)
+    layout.addWidget(vnc_button)
+    layout.addWidget(hint)
+    layout.addStretch(1)
+    return layout
+
+
 def build_terminal_page(window):
     page = QWidget()
     layout = QVBoxLayout(page)
@@ -319,29 +464,20 @@ def build_terminal_page(window):
     window.files_summary_label = None
     window.files_table = None
 
-    layout.addWidget(_build_session_bar(window))
-
     main_splitter = QSplitter(Qt.Horizontal)
-    main_splitter.setChildrenCollapsible(False)
+    main_splitter.setObjectName("WorkbenchThreePaneSplitter")
+    main_splitter.setChildrenCollapsible(True)
     main_splitter.setHandleWidth(8)
 
-    file_splitter = QSplitter(Qt.Vertical)
-    file_splitter.setChildrenCollapsible(False)
-    file_splitter.setHandleWidth(8)
-    file_splitter.addWidget(_build_remote_files_panel(window))
-    file_splitter.addWidget(_build_local_files_panel(window))
-    file_splitter.setSizes([320, 300])
-
-    terminal_column = QSplitter(Qt.Vertical)
-    terminal_column.setChildrenCollapsible(False)
-    terminal_column.setHandleWidth(8)
-    terminal_column.addWidget(_build_terminal_panel(window))
-    terminal_column.addWidget(_build_transfer_bar(window))
-    terminal_column.setSizes([620, 90])
-
-    main_splitter.addWidget(file_splitter)
-    main_splitter.addWidget(terminal_column)
-    main_splitter.setSizes([430, 820])
+    main_splitter.addWidget(_build_file_management_panel(window))
+    main_splitter.addWidget(_build_ssh_panel(window))
+    main_splitter.addWidget(_build_vnc_panel(window))
+    main_splitter.setCollapsible(0, True)
+    main_splitter.setCollapsible(1, False)
+    main_splitter.setCollapsible(2, True)
+    main_splitter.setSizes([420, 560, 520])
+    window.workbench_three_pane_splitter = main_splitter
+    layout.addLayout(_build_three_pane_toolbar(main_splitter), 0)
     layout.addWidget(main_splitter, 1)
 
     return page

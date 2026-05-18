@@ -8,7 +8,7 @@ class UiSmokeTest(unittest.TestCase):
     def test_main_window_contains_terminal_and_double_pane_files(self):
         try:
             from PyQt5.QtCore import Qt
-            from PyQt5.QtWidgets import QApplication, QCheckBox, QComboBox, QPushButton
+            from PyQt5.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QPushButton, QSplitter
             from ui.main_window import JetsonControlPanel
         except Exception as exc:  # pragma: no cover - only used when Qt is unavailable.
             self.skipTest(str(exc))
@@ -18,6 +18,7 @@ class UiSmokeTest(unittest.TestCase):
         try:
             self.assertIn("terminal", window.page_key_to_index)
             self.assertIn("desktop", window.page_key_to_index)
+            self.assertEqual(window.page_key_to_index["desktop"], window.page_key_to_index["terminal"])
             self.assertIsNotNone(window.terminal_output_edit)
             self.assertIsNotNone(window.local_files_table)
             self.assertIsNotNone(window.remote_files_table)
@@ -33,10 +34,21 @@ class UiSmokeTest(unittest.TestCase):
             )
             self.assertIsNotNone(window.monitor_status_label)
             terminal_page = window.page_stack.widget(window.page_key_to_index["terminal"])
+            terminal_labels = [label.text() for label in terminal_page.findChildren(QLabel)]
+            self.assertIn("文件管理", terminal_labels)
+            self.assertIn("SSH", terminal_labels)
+            self.assertIn("VNC", terminal_labels)
             button_texts = [button.text() for button in terminal_page.findChildren(QPushButton)]
             self.assertIn("同步到 Jetson", button_texts)
             self.assertIn("本地预览", button_texts)
             self.assertIn("检测 DISPLAY", button_texts)
+            self.assertIn("收起文件管理", button_texts)
+            self.assertIn("收起 VNC", button_texts)
+            three_pane_splitter = terminal_page.findChild(QSplitter, "WorkbenchThreePaneSplitter")
+            self.assertIsNotNone(three_pane_splitter)
+            self.assertTrue(three_pane_splitter.isCollapsible(0))
+            self.assertFalse(three_pane_splitter.isCollapsible(1))
+            self.assertTrue(three_pane_splitter.isCollapsible(2))
             self.assertTrue(hasattr(window, "preview_remote_selected_file"))
             checkbox_texts = [checkbox.text() for checkbox in terminal_page.findChildren(QCheckBox)]
             self.assertIn("连接后导出 DISPLAY", checkbox_texts)
