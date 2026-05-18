@@ -43,6 +43,7 @@ from core.paths import DEFAULTS, PATHS
 from core.settings import settings_bool
 from core.task_history import TaskHistoryStore
 from core.ssh_workers import SftpWorker, SshTerminalWorker
+from core.terminal_filter import strip_ansi_sequences
 from services import device_health_service, display_service, paramiko_service, proxy_service, remote_ops_service, ssh_service
 from ui.pages.display_page import build_display_page
 from ui.pages.devices_page import build_devices_page
@@ -1612,8 +1613,15 @@ class JetsonControlPanel(QMainWindow):
                     self._append_log("SSH 终端: " + line)
         if self.terminal_output_edit is None:
             return
+        text = strip_ansi_sequences(text)
         self.terminal_output_edit.moveCursor(QTextCursor.End)
-        self.terminal_output_edit.insertPlainText(text)
+        for char in text:
+            if char in ("\b", "\x7f"):
+                self.terminal_output_edit.textCursor().deletePreviousChar()
+            elif char == "\r" or char == "\x07":
+                continue
+            elif char == "\t" or char == "\n" or ord(char) >= 32:
+                self.terminal_output_edit.insertPlainText(char)
         self.terminal_output_edit.verticalScrollBar().setValue(self.terminal_output_edit.verticalScrollBar().maximum())
 
     def _terminal_connected(self, display):
