@@ -27,6 +27,7 @@ class TerminalControllerMixin:
         self.terminal_worker.failed.connect(self._terminal_failed)
         self.terminal_worker.disconnected.connect(self._terminal_disconnected)
         self.terminal_worker.start()
+        self._refresh_task_center()
 
     def terminal_disconnect(self):
         if self.terminal_worker and self.terminal_worker.isRunning():
@@ -34,6 +35,7 @@ class TerminalControllerMixin:
             self.terminal_worker.wait(2000)
         if self.terminal_status_label:
             self.terminal_status_label.setText("已断开")
+        self._refresh_task_center()
 
     def terminal_send_text(self, text, warn=False):
         if not text:
@@ -86,6 +88,7 @@ class TerminalControllerMixin:
             QTimer.singleShot(300, self._send_terminal_display_exports)
         if self.remote_files_table is not None:
             QTimer.singleShot(200, self.refresh_remote_files)
+        self._refresh_task_center()
 
     def _send_terminal_display_exports(self):
         if not self.terminal_export_display_check or not self.terminal_export_display_check.isChecked():
@@ -115,7 +118,9 @@ class TerminalControllerMixin:
             self.terminal_status_label.setText("连接失败")
         self._terminal_append_text("\n[错误] {}\n".format(error))
         self._append_log("SSH 终端错误: " + str(error))
+        self._refresh_task_center()
 
     def _terminal_disconnected(self):
         if self.terminal_status_label and self.terminal_status_label.text().startswith("已连接"):
             self.terminal_status_label.setText("已断开")
+        self._refresh_task_center()

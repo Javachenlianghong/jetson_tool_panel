@@ -357,6 +357,7 @@ class SftpControllerMixin:
             self.files_summary_label.setText("SFTP {} 正在执行...".format(action_text))
         if self.transfer_progress_bar:
             self.transfer_progress_bar.setValue(0)
+        self._refresh_task_center()
 
     def _sftp_listed(self, path, rows):
         self.remote_file_path_edit.setText(path)
@@ -369,6 +370,7 @@ class SftpControllerMixin:
             self.files_summary_label.setText("{} ({}/{})".format(message, index, total))
         if self.transfer_progress_bar:
             self.transfer_progress_bar.setValue(int(index * 100 / max(total, 1)))
+        self._refresh_task_center()
 
     def _sftp_file_progress(self, message, index, total, done, file_size):
         file_percent = int(done * 100 / file_size) if file_size else 0
@@ -433,6 +435,7 @@ class SftpControllerMixin:
             QTimer.singleShot(100, self.refresh_remote_files)
         elif refresh_target == "local":
             QTimer.singleShot(0, self.refresh_local_files)
+        self._refresh_task_center()
 
     def sftp_upload_selected(self):
         rows = [row for row in self._selected_file_rows(self.local_files_table) if row.get("name") != ".."]
@@ -515,3 +518,4 @@ class SftpControllerMixin:
             self.sftp_worker.cancel()
             if self.files_summary_label:
                 self.files_summary_label.setText("正在取消传输...")
+        self._refresh_task_center()

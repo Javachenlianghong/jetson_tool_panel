@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QStyle,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -199,6 +200,8 @@ class JetsonControlPanel(
         self.health_interval_combo = None
         self.workbench_labels = {}
         self.task_history_text = None
+        self.task_center_table = None
+        self.task_center_summary_label = None
         self.run_workdir_edit = None
         self.run_command_edit = None
         self.run_background_check = None
@@ -259,6 +262,7 @@ class JetsonControlPanel(
         self.monitor_status_label = None
         self.resource_monitor_worker = None
         self.resource_monitor_remote = None
+        self.resource_monitor_last_status = "未连接"
         self.health_timer = QTimer(self)
         self.health_timer.timeout.connect(self.refresh_device_health)
 
@@ -271,6 +275,7 @@ class JetsonControlPanel(
         self._refresh_config_selectors()
         self._apply_active_context_to_forms()
         self._refresh_task_history()
+        self._refresh_task_center()
         self._append_log("就绪。")
         self._restart_resource_monitor()
 
@@ -613,14 +618,17 @@ class JetsonControlPanel(
         for label in self.monitor_labels.values():
             label.setToolTip(raw)
         if self.monitor_status_label is not None:
-            self.monitor_status_label.setText(
-                "监控中: {}".format(self.resource_monitor_remote or self._normalize_remote_text(self.remote_edit.text()))
-            )
+            status = "监控中: {}".format(self.resource_monitor_remote or self._normalize_remote_text(self.remote_edit.text()))
+            self.resource_monitor_last_status = status
+            self.monitor_status_label.setText(status)
             self.monitor_status_label.setToolTip(raw)
+        self._refresh_task_center()
 
     def _set_resource_monitor_status(self, status):
+        self.resource_monitor_last_status = str(status or "未知")
         if self.monitor_status_label is not None:
-            self.monitor_status_label.setText(str(status or "未知"))
+            self.monitor_status_label.setText(self.resource_monitor_last_status)
+        self._refresh_task_center()
 
     def _stop_resource_monitor(self):
         worker = self.resource_monitor_worker
@@ -647,6 +655,7 @@ class JetsonControlPanel(
         worker.status.connect(self._set_resource_monitor_status)
         self.resource_monitor_worker = worker
         worker.start()
+        self._refresh_task_center()
 
     def _show_about(self):
         QMessageBox.information(
@@ -1473,6 +1482,101 @@ class JetsonControlPanel(
         for button in self.command_buttons:
             button.setEnabled(not short_running)
         self.stop_button.setEnabled(self.command_controller.is_running())
+        self._refresh_task_center()
+
+    def _elapsed_text(self, started):
+        if not started:
+            return "-"
+        seconds = max(0, int((datetime.now() - started).total_seconds()))
+        minutes, second = divmod(seconds, 60)
+        hour, minute = divmod(minutes, 60)
+        if hour:
+            return "{}:{:02d}:{:02d}".format(hour, minute, second)
+        return "{:02d}:{:02d}".format(minute, second)
+
+    def _command_task_row(self, channel):
+        state = self.command_controller.state(channel)
+        label = "短命令" if channel == "short" else "长命令"
+        if not state:
+            return [label, "空闲", "-", "-", "可启动"]
+        status = "超时停止中" if state.timed_out else "运行中"
+        detail = "cwd: {}".format(state.cwd or self.paths.app_dir)
+        return [label, status, state.title, self._elapsed_text(state.started_at), detail]
+
+    def _worker_row(self, label, worker, title, detail):
+        if worker and worker.isRunning():
+            return [label, "运行中", title, "-", detail]
+        return [label, "空闲", "-", "-", detail or "可启动"]
+
+    def _refresh_task_center(self):
+        table = self.task_center_table
+        if table is None:
+            return
+        sftp_title = "-"
+        sftp_detail = "可启动"
+        if self.sftp_worker and self.sftp_worker.isRunning():
+            sftp_title = getattr(self.sftp_worker, "action", "SFTP")
+            sftp_detail = str(getattr(self.sftp_worker, "payload", {}) or {})
+        model_title = "模型文件扫描" if self.model_scan_worker and self.model_scan_worker.isRunning() else "-"
+        model_detail = self.model_workdir_edit.text().strip() if self.model_workdir_edit else "可启动"
+        terminal_title = self.terminal_status_label.text() if self.terminal_status_label else "-"
+        monitor_running = self.resource_monitor_worker and self.resource_monitor_worker.isRunning()
+        rows = [
+            self._command_task_row("short"),
+            self._command_task_row("long"),
+            self._worker_row("SFTP", self.sftp_worker, sftp_title, sftp_detail),
+            self._worker_row("模型扫描", self.model_scan_worker, model_title, model_detail),
+            self._worker_row(
+                "SSH 终端",
+                self.terminal_worker,
+                terminal_title,
+                self._normalize_remote_text(self.remote_edit.text()) if self.remote_edit else "",
+            ),
+            [
+                "资源监控",
+                "运行中" if monitor_running else "停止",
+                self.resource_monitor_remote or "-",
+                "-",
+                self.resource_monitor_last_status,
+            ],
+        ]
+        table.setRowCount(0)
+        running = 0
+        for row_index, row in enumerate(rows):
+            if row[1] in ("运行中", "超时停止中"):
+                running += 1
+            table.insertRow(row_index)
+            for column, value in enumerate(row):
+                table.setItem(row_index, column, QTableWidgetItem(str(value)))
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(True)
+        if self.task_center_summary_label:
+            self.task_center_summary_label.setText("运行中任务: {} / {}".format(running, len(rows)))
+
+    def stop_short_command(self):
+        if self.command_controller.stop("short"):
+            self._append_log("已请求停止短命令。")
+        self._sync_command_running_state()
+
+    def stop_long_command(self):
+        if self.command_controller.stop("long"):
+            self._append_log("已请求停止长命令。")
+        self._sync_command_running_state()
+
+    def cancel_sftp_task(self):
+        if self.sftp_worker and self.sftp_worker.isRunning():
+            self.sftp_cancel_transfer()
+        self._refresh_task_center()
+
+    def cancel_model_scan_task(self):
+        if self.model_scan_worker and self.model_scan_worker.isRunning():
+            self.model_scan_worker.cancel()
+            self._append_log("已请求取消模型扫描。")
+        self._refresh_task_center()
+
+    def reconnect_resource_monitor(self):
+        self._append_log("正在重连资源监控。")
+        self._restart_resource_monitor()
 
     def _run_command(
         self,
@@ -1518,9 +1622,11 @@ class JetsonControlPanel(
 
     def _handle_command_output(self, channel, line):
         self._append_log(line)
+        self._refresh_task_center()
 
     def _command_timed_out(self, channel):
         self._append_log("命令超时，正在强制停止: {}".format(self.command_controller.title(channel)))
+        self._refresh_task_center()
 
     def _command_failed_to_start(self, channel, error):
         self._append_log("无法启动命令: " + error)
@@ -1566,6 +1672,7 @@ class JetsonControlPanel(
         self.command_timed_out = False
         if channel == "short" and return_code == 0 and self.workflow_queue:
             self._run_next_workflow_command()
+        self._refresh_task_center()
 
     def _handle_command_success(self, title):
         if title == "测试 SSH":
@@ -1651,6 +1758,7 @@ class JetsonControlPanel(
         if self.command_controller.stop():
             self._append_log("已请求停止当前命令。")
             self._sync_command_running_state()
+        self._refresh_task_center()
 
     def enable_firewall_rule(self):
         if not self.paths.windows_proxy_script.exists():

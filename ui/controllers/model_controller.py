@@ -35,6 +35,7 @@ class ModelControllerMixin:
         self._set_model_scan_running(True)
         self._append_log("开始扫描远端模型文件: " + workdir)
         self.model_scan_worker.start()
+        self._refresh_task_center()
 
     def choose_model_source_file(self):
         if self.model_scan_worker and self.model_scan_worker.isRunning():
@@ -91,6 +92,7 @@ class ModelControllerMixin:
             self._start_model_scan(password=password)
             return
         self._set_model_scan_running(False)
+        self._refresh_task_center()
 
     def _current_tensorrt_command(self):
         return remote_ops_service.tensorrt_command(
