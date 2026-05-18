@@ -240,6 +240,7 @@ class JetsonControlPanel(
         self.device_remote_edit = None
         self.device_remote_path_edit = None
         self.device_local_root_edit = None
+        self.device_overview_table = None
         self.project_id_edit = None
         self.project_name_edit = None
         self.project_local_root_edit = None
@@ -1222,6 +1223,8 @@ class JetsonControlPanel(
             self.active_project_combo.addItem(project.get("name", project.get("id")), project.get("id"))
         self._set_combo_by_data(self.active_project_combo, active_project.get("id"))
         self.active_project_combo.blockSignals(False)
+        if hasattr(self, "refresh_device_overview"):
+            self.refresh_device_overview()
 
     def _active_device_changed(self, *_args):
         device_id = self._combo_current_data(self.active_device_combo)

@@ -1,6 +1,7 @@
 """Model deployment UI controller."""
 
-from PyQt5.QtWidgets import QApplication, QInputDialog, QMessageBox
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QApplication, QInputDialog, QMessageBox, QTableWidgetItem
 
 from core.model_workers import RemoteModelScanWorker
 from core.config_store import slugify
@@ -314,6 +315,56 @@ class ModelControllerMixin:
             index = self.device_profile_combo.findText(current)
             if index >= 0:
                 self.device_profile_combo.setCurrentIndex(index)
+        self.refresh_device_overview()
+
+    def refresh_device_overview(self):
+        table = getattr(self, "device_overview_table", None)
+        if table is None:
+            return
+        active_device_id = self._combo_current_data(self.active_device_combo)
+        active_project_id = self._combo_current_data(self.active_project_combo)
+        table.setRowCount(0)
+        row_index = 0
+        for device in self.config_store.devices():
+            projects = self.config_store.projects(device.get("id")) or [{}]
+            for project in projects:
+                table.insertRow(row_index)
+                is_active = device.get("id") == active_device_id and project.get("id") == active_project_id
+                values = [
+                    "●" if is_active else "",
+                    device.get("name", device.get("id", "")),
+                    device.get("ssh", ""),
+                    project.get("name", project.get("id", "")),
+                    project.get("remote_root", ""),
+                    project.get("local_root", ""),
+                ]
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(str(value))
+                    item.setData(Qt.UserRole, {
+                        "device_id": device.get("id"),
+                        "project_id": project.get("id"),
+                    })
+                    table.setItem(row_index, column, item)
+                row_index += 1
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(True)
+
+    def load_selected_device_overview(self):
+        table = getattr(self, "device_overview_table", None)
+        if table is None or table.currentRow() < 0:
+            QMessageBox.warning(self, "未选择组合", "请先在设备与项目总览里选择一行。")
+            return
+        item = table.item(table.currentRow(), 0)
+        payload = item.data(Qt.UserRole) if item else {}
+        device_id = payload.get("device_id")
+        project_id = payload.get("project_id")
+        if device_id:
+            self.config_store.set_active_device(device_id)
+        if project_id:
+            self.config_store.set_active_project(project_id)
+        self._refresh_config_selectors()
+        self._apply_active_context_to_forms()
+        self._append_log("已加载设备/项目组合。")
 
     def fill_device_profile_from_current(self):
         self.device_remote_edit.setText(self._normalize_remote_text(self.remote_edit.text()))
@@ -346,6 +397,7 @@ class ModelControllerMixin:
         self.config_store.upsert_project(project_payload)
         self._refresh_config_selectors()
         self._refresh_device_profile_combo()
+        self.refresh_device_overview()
         self._apply_active_context_to_forms()
         self._append_log("已保存设备档案: " + name)
 
@@ -358,6 +410,7 @@ class ModelControllerMixin:
         self.config_store.set_active_device(device_id)
         self._refresh_config_selectors()
         self._apply_active_context_to_forms()
+        self.refresh_device_overview()
         self._append_log("已加载设备档案: " + device.get("name", device_id))
 
     def delete_device_profile(self):
@@ -378,6 +431,7 @@ class ModelControllerMixin:
         self._refresh_config_selectors()
         self._refresh_device_profile_combo()
         self._apply_active_context_to_forms()
+        self.refresh_device_overview()
         self._append_log("已删除设备档案: " + device.get("name", device_id))
 
     def fill_project_config_from_current(self):
@@ -418,6 +472,7 @@ class ModelControllerMixin:
         self._set_combo_by_data(self.active_project_combo, project_id)
         self.config_store.set_active_project(project_id)
         self._apply_active_context_to_forms()
+        self.refresh_device_overview()
         self._append_log("已保存项目配置: " + name)
 
     def delete_project_config(self):
@@ -437,4 +492,5 @@ class ModelControllerMixin:
         self.config_store.delete_project(project_id)
         self._refresh_config_selectors()
         self._apply_active_context_to_forms()
+        self.refresh_device_overview()
         self._append_log("已删除项目配置: " + project.get("name", project_id))

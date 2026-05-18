@@ -52,6 +52,8 @@ class UiSmokeTest(unittest.TestCase):
             self.assertIsNotNone(window.task_center_table)
             self.assertIsNotNone(window.runtime_result_text)
             self.assertIsNotNone(window.monitor_history_label)
+            self.assertIsNotNone(window.device_overview_table)
+            self.assertGreaterEqual(window.device_overview_table.rowCount(), 1)
         finally:
             window._stop_resource_monitor()
             window.deleteLater()
