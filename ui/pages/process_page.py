@@ -1,4 +1,15 @@
-from PyQt5.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QTableWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ui.pages.common import build_note, build_panel
 
@@ -8,6 +19,8 @@ def build_process_page(window):
     layout = QVBoxLayout(page)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(12)
+    window.process_summary_label = None
+    window.process_table = None
 
     list_grid = QGridLayout()
     list_grid.setHorizontalSpacing(10)
@@ -23,6 +36,21 @@ def build_process_page(window):
     list_grid.addWidget(list_button, 0, 2)
     list_grid.setColumnStretch(1, 1)
     layout.addWidget(build_panel("远程进程列表", list_grid))
+
+    result_layout = QVBoxLayout()
+    window.process_summary_label = QLabel("点击“刷新进程”后显示远端进程。")
+    window.process_summary_label.setObjectName("MutedText")
+    result_layout.addWidget(window.process_summary_label)
+    window.process_table = QTableWidget(0, 5)
+    window.process_table.setHorizontalHeaderLabels(["PID", "CPU", "MEM", "运行时长", "命令"])
+    window.process_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    window.process_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    window.process_table.setAlternatingRowColors(True)
+    window.process_table.verticalHeader().setVisible(False)
+    window.process_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+    window.process_table.setMinimumHeight(220)
+    result_layout.addWidget(window.process_table)
+    layout.addWidget(build_panel("进程结果", result_layout), 1)
 
     kill_grid = QGridLayout()
     kill_grid.setHorizontalSpacing(10)

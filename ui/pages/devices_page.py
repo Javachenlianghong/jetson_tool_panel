@@ -46,6 +46,6 @@ def build_devices_page(window):
     grid.addLayout(buttons, 5, 0, 1, 2)
 
     layout.addWidget(build_panel("多设备配置", grid))
-    layout.addWidget(build_note("设备档案保存在本机 settings.ini，不会提交到 Git。加载档案会同步更新 SSH 地址、本地路径和远端项目路径。"))
+    layout.addWidget(build_note("设备档案用于保存多个设备配置。加载档案会同步更新窗口顶部的远端 SSH 地址、本地路径和远端项目路径。日常操作只需要在顶部确认远端 SSH。"))
     layout.addStretch(1)
     return page

@@ -13,18 +13,18 @@ def build_transfer_page(window):
     settings_grid.setHorizontalSpacing(10)
     settings_grid.setVerticalSpacing(10)
 
-    transfer_remote_edit = QLineEdit(window.remote_edit.text())
     transfer_remote_path_edit = QLineEdit(window.remote_path_edit.text())
     transfer_local_root_edit = QLineEdit(window.local_root_edit.text())
-    window._bind_line_edits(window.remote_edit, transfer_remote_edit)
     window._bind_line_edits(window.remote_path_edit, transfer_remote_path_edit)
     window._bind_line_edits(window.local_root_edit, transfer_local_root_edit)
 
     choose_local_button = QPushButton("浏览")
     choose_local_button.clicked.connect(window.choose_local_root)
 
-    settings_grid.addWidget(QLabel("Jetson SSH"), 0, 0)
-    settings_grid.addWidget(transfer_remote_edit, 0, 1, 1, 2)
+    ssh_hint = QLabel("远端 SSH 地址在窗口顶部统一填写。")
+    ssh_hint.setObjectName("MutedText")
+    settings_grid.addWidget(QLabel("远端 SSH"), 0, 0)
+    settings_grid.addWidget(ssh_hint, 0, 1, 1, 2)
     settings_grid.addWidget(QLabel("Jetson 项目路径"), 1, 0)
     settings_grid.addWidget(transfer_remote_path_edit, 1, 1, 1, 2)
     settings_grid.addWidget(QLabel("Windows 保存目录"), 2, 0)
@@ -83,6 +83,6 @@ def build_transfer_page(window):
     buttons_grid.setColumnStretch(1, 1)
     buttons_grid.setColumnStretch(2, 1)
     layout.addWidget(build_panel("快速操作", buttons_grid))
-    layout.addWidget(build_note("此页配置会与“代理”工作台中的 Jetson SSH 和项目同步面板保持同步。"))
+    layout.addWidget(build_note("远端 SSH 地址只在窗口顶部填写；此页只维护项目路径和同步选项。"))
     layout.addStretch(1)
     return page

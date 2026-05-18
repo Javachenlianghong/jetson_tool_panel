@@ -77,14 +77,11 @@ def build_proxy_page(window):
     ssh_grid.setHorizontalSpacing(10)
     ssh_grid.setVerticalSpacing(10)
 
-    window.remote_edit = QLineEdit(window.defaults.remote)
-    ssh_browse_button = QPushButton("...")
-    ssh_browse_button.setEnabled(False)
-    ssh_browse_button.setToolTip("SSH 地址直接在输入框中编辑")
-
-    ssh_grid.addWidget(QLabel("SSH 地址"), 0, 0)
-    ssh_grid.addWidget(window.remote_edit, 0, 1)
-    ssh_grid.addWidget(ssh_browse_button, 0, 2)
+    ssh_grid.addWidget(QLabel("远端 SSH"), 0, 0)
+    ssh_hint = QLabel("在窗口顶部统一填写，所有 SSH、同步、诊断和显示命令都会使用同一个地址。")
+    ssh_hint.setObjectName("MutedText")
+    ssh_hint.setWordWrap(True)
+    ssh_grid.addWidget(ssh_hint, 0, 1, 1, 2)
     ssh_grid.setColumnStretch(1, 1)
 
     ssh_buttons = QHBoxLayout()
@@ -101,7 +98,7 @@ def build_proxy_page(window):
     ssh_buttons.addStretch(1)
     ssh_grid.addLayout(ssh_buttons, 1, 0, 1, 3)
 
-    layout.addWidget(build_panel("Jetson SSH", ssh_grid))
+    layout.addWidget(build_panel("SSH 操作", ssh_grid))
 
     sync_grid = QGridLayout()
     sync_grid.setHorizontalSpacing(10)

@@ -42,7 +42,7 @@ def build_display_page(window):
     window.framebuffer_fallback_check.setChecked(True)
 
     grid.addWidget(QLabel("使用 SSH"), 0, 0)
-    grid.addWidget(QLabel("项目传输页里的 Jetson SSH 地址"), 0, 1, 1, 2)
+    grid.addWidget(QLabel("窗口顶部统一填写的远端 SSH 地址"), 0, 1, 1, 2)
     grid.addWidget(QLabel("显示输出口"), 1, 0)
     grid.addWidget(window.display_output_combo, 1, 1, 1, 2)
     grid.addWidget(QLabel("分辨率"), 2, 0)

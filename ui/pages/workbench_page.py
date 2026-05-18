@@ -25,12 +25,12 @@ def build_workbench_page(window):
 
     action_layout = QHBoxLayout()
     for text, handler, primary in [
+        ("一键同步构建运行", window.workflow_sync_build_run, True),
         ("同步", window.workflow_sync, True),
         ("构建", window.workflow_build, True),
         ("运行", window.workflow_run, True),
-        ("停止", window.workflow_stop, False),
         ("日志", window.workflow_logs, False),
-        ("一键同步构建运行", window.workflow_sync_build_run, True),
+        ("停止", window.workflow_stop, False),
         ("诊断报告", window.generate_diagnostic_report, False),
     ]:
         button = QPushButton(text)

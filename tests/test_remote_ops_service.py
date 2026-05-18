@@ -59,6 +59,122 @@ class RemoteOpsServiceTest(unittest.TestCase):
         self.assertIn("--loadEngine=", command)
         self.assertIn("--duration=10", command)
 
+    def test_parse_environment_check_output_groups_statuses(self):
+        output = [
+            "Environment check",
+            "== OS ==",
+            "Ubuntu 22.04",
+            "== Python ==",
+            "Python 3.10.12",
+            "pip 23.0",
+            "== OpenCV Python ==",
+            "不可用",
+            "== Jetson ==",
+            "nv_tegra_release 不存在",
+            "tegrastats 不存在",
+            "TensorRT Python 不可用",
+            "== Common libraries ==",
+            "numpy: 1.26.0",
+            "torch: 不可用 (No module named torch)",
+        ]
+        result = remote_ops_service.parse_environment_check_output(output)
+        by_title = {item["title"]: item for item in result["items"]}
+
+        self.assertEqual(by_title["OS"]["status"], "ok")
+        self.assertEqual(by_title["Python"]["status"], "ok")
+        self.assertEqual(by_title["OpenCV Python"]["status"], "warning")
+        self.assertEqual(by_title["Jetson"]["status"], "unknown")
+        self.assertEqual(by_title["Common libraries"]["status"], "warning")
+
+    def test_parse_device_init_advice_output_keeps_actionable_sections(self):
+        output = [
+            "Device initialization checklist",
+            "== System identity ==",
+            "jetson",
+            "== Network and proxy ==",
+            "Suggested temporary proxy:",
+            "  export http_proxy=http://192.168.1.11:7897",
+            "== Required tools ==",
+            "[OK] git -> /usr/bin/git",
+            "[MISS] cmake",
+            "== Suggested install commands ==",
+            "sudo apt update",
+            "sudo apt install -y git cmake",
+        ]
+        summary = remote_ops_service.parse_device_init_advice_output(output)
+
+        self.assertIn("Network and proxy", summary)
+        self.assertIn("[MISS] cmake", summary)
+        self.assertIn("sudo apt install", summary)
+
+    def test_parse_network_diagnostics_output_groups_checks(self):
+        output = [
+            "== IP addresses ==",
+            "eth0 192.168.1.20/24",
+            "== Ping public IP 8.8.8.8 ==",
+            "[OK] Ping public IP 8.8.8.8",
+            "== DNS github.com ==",
+            "[OK] DNS github.com",
+            "== Ping github.com ==",
+            "[FAIL] Ping github.com",
+            "== Windows proxy port ==",
+            "[OK] Windows proxy port",
+            "== pip config ==",
+            "global.index-url='https://pypi.org/simple'",
+        ]
+        result = remote_ops_service.parse_network_diagnostics_output(output)
+        by_title = {item["title"]: item for item in result["groups"]}
+
+        self.assertEqual(by_title["远端地址"]["status"], "ok")
+        self.assertEqual(by_title["公网连通"]["status"], "ok")
+        self.assertEqual(by_title["DNS / GitHub"]["status"], "error")
+        self.assertEqual(by_title["Windows 代理"]["status"], "ok")
+
+    def test_parse_peripheral_check_output_marks_missing_devices(self):
+        output = [
+            "== USB ==",
+            "Bus 001 Device 001: ID 1d6b:0002",
+            "== Video devices ==",
+            "未发现 /dev/video*",
+            "== Storage ==",
+            "sda 100G",
+        ]
+        result = remote_ops_service.parse_peripheral_check_output(output)
+        by_title = {item["title"]: item for item in result["items"]}
+
+        self.assertEqual(by_title["USB"]["status"], "ok")
+        self.assertEqual(by_title["摄像头"]["status"], "warning")
+        self.assertEqual(by_title["磁盘"]["status"], "ok")
+
+    def test_parse_process_and_file_tables(self):
+        processes = remote_ops_service.parse_process_list_output([
+            "PID   PPID  CPU  MEM  ELAPSED   COMMAND",
+            "123   1     9.5  3.2  01:02     python3 detect.py --arg",
+        ])
+        self.assertEqual(processes[0]["pid"], "123")
+        self.assertEqual(processes[0]["command"], "python3 detect.py --arg")
+
+        files = remote_ops_service.parse_file_list_output([
+            "Listing: /home/jetson",
+            "total 4",
+            "drwxr-xr-x 2 jetson jetson 4.0K May 18 10:20 project",
+            "-rw-r--r-- 1 jetson jetson 12 May 18 10:21 run.log",
+        ])
+        self.assertEqual(files["path"], "/home/jetson")
+        self.assertEqual(files["rows"][0]["name"], "project")
+        self.assertEqual(files["rows"][1]["size"], "12")
+
+    def test_parse_service_status_output(self):
+        result = remote_ops_service.parse_service_status_output([
+            "● demo.service - Demo",
+            "     Loaded: loaded (/etc/systemd/system/demo.service; enabled)",
+            "     Active: active (running) since Mon 2026-05-18 10:00:00 CST;",
+            "   Main PID: 1234 (demo)",
+        ])
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("active (running)", result["active"])
+        self.assertIn("Main PID", result["pid"])
+
 
 if __name__ == "__main__":
     unittest.main()

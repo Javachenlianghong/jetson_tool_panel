@@ -3,6 +3,27 @@
 from core.command_runner import quote_for_bash
 
 
+ENVIRONMENT_SECTION_ORDER = [
+    "OS",
+    "Kernel",
+    "CPU",
+    "Python",
+    "Build tools",
+    "OpenCV Python",
+    "FFmpeg",
+    "Jetson",
+    "RK3588 / Rockchip",
+    "Common libraries",
+]
+
+ENVIRONMENT_STATUS_TEXT = {
+    "ok": "正常",
+    "warning": "注意",
+    "error": "异常",
+    "unknown": "未检测",
+}
+CHECK_STATUS_TEXT = ENVIRONMENT_STATUS_TEXT
+
 PROTECTED_REMOTE_PATHS = {
     "",
     "/",
@@ -50,6 +71,374 @@ def remote_path_refusal_reason(remote_path, destructive=False):
     if destructive and not path.startswith("/"):
         return "Destructive file operations require an absolute remote path."
     return ""
+
+
+def _meaningful_lines(lines):
+    return [line.strip() for line in lines if str(line).strip()]
+
+
+def _section_summary(lines, max_lines=4):
+    meaningful = _meaningful_lines(lines)
+    if not meaningful:
+        return "无输出"
+    return "\n".join(meaningful[:max_lines])
+
+
+def _split_double_equal_sections(lines):
+    sections = []
+    title = None
+    body = []
+
+    def flush():
+        if title:
+            sections.append({
+                "title": title,
+                "lines": list(body),
+            })
+
+    for raw_line in lines:
+        line = str(raw_line).rstrip("\r\n")
+        stripped = line.strip()
+        if stripped.startswith("== ") and stripped.endswith(" =="):
+            flush()
+            title = stripped[3:-3].strip()
+            body = []
+        elif title:
+            body.append(line)
+    flush()
+    return sections
+
+
+def _environment_section_status(title, lines):
+    meaningful = _meaningful_lines(lines)
+    if not meaningful:
+        return "unknown"
+
+    text = "\n".join(meaningful)
+    lower_text = text.lower()
+    negative_markers = (
+        "不可用",
+        "不存在",
+        "not found",
+        "no such file",
+        "command not found",
+        "modulenotfounderror",
+        "traceback",
+        "[miss]",
+    )
+
+    def has_negative(line):
+        lower_line = line.lower()
+        return any(marker in lower_line for marker in negative_markers)
+
+    if title == "Jetson":
+        for line in meaningful:
+            lower_line = line.lower()
+            if has_negative(line):
+                continue
+            if any(marker in lower_line for marker in ("nv_tegra", "tegrastats:", "nvinfer", "cuda", "cudnn", "tensorrt")):
+                return "ok"
+        if any(line.startswith("ii ") for line in meaningful):
+            return "ok"
+        return "unknown"
+
+    if title == "RK3588 / Rockchip":
+        for line in meaningful:
+            lower_line = line.lower()
+            if has_negative(line):
+                continue
+            if any(marker in lower_line for marker in ("rk3588", "rockchip", "rknpu", "rknn")):
+                return "ok"
+        return "unknown"
+
+    if title == "Common libraries":
+        unavailable = sum(1 for line in meaningful if "不可用" in line or "not found" in line.lower())
+        if unavailable == 0:
+            return "ok"
+        if unavailable < len(meaningful):
+            return "warning"
+        return "error"
+
+    if any(marker in lower_text for marker in negative_markers):
+        if title in ("OS", "Kernel", "CPU", "Python"):
+            return "error"
+        return "warning"
+
+    return "ok"
+
+
+def parse_environment_check_output(lines):
+    found_sections = _split_double_equal_sections(lines)
+    by_title = {section["title"]: section for section in found_sections}
+    items = []
+
+    for title in ENVIRONMENT_SECTION_ORDER:
+        section = by_title.get(title, {"title": title, "lines": []})
+        status = _environment_section_status(title, section["lines"])
+        details = "\n".join(_meaningful_lines(section["lines"]))
+        items.append({
+            "title": title,
+            "status": status,
+            "status_text": ENVIRONMENT_STATUS_TEXT.get(status, status),
+            "summary": _section_summary(section["lines"]),
+            "details": details,
+        })
+
+    known_titles = set(ENVIRONMENT_SECTION_ORDER)
+    for section in found_sections:
+        if section["title"] in known_titles:
+            continue
+        status = _environment_section_status(section["title"], section["lines"])
+        details = "\n".join(_meaningful_lines(section["lines"]))
+        items.append({
+            "title": section["title"],
+            "status": status,
+            "status_text": ENVIRONMENT_STATUS_TEXT.get(status, status),
+            "summary": _section_summary(section["lines"]),
+            "details": details,
+        })
+
+    summary = {status: 0 for status in ENVIRONMENT_STATUS_TEXT}
+    for item in items:
+        summary[item["status"]] = summary.get(item["status"], 0) + 1
+
+    return {
+        "items": items,
+        "summary": summary,
+    }
+
+
+def parse_device_init_advice_output(lines):
+    sections = _split_double_equal_sections(lines)
+    summary = []
+    for section in sections:
+        meaningful = _meaningful_lines(section["lines"])
+        if not meaningful:
+            continue
+        if section["title"] in ("Network and proxy", "Required tools", "Suggested install commands"):
+            summary.append("== {} ==\n{}".format(section["title"], "\n".join(meaningful[:12])))
+    return "\n\n".join(summary) if summary else "\n".join(_meaningful_lines(lines)[-30:])
+
+
+def _status_from_success_flags(flags):
+    if not flags:
+        return "unknown"
+    if any(flag is False for flag in flags):
+        return "error"
+    return "ok"
+
+
+def _combined_statuses(statuses):
+    statuses = [status for status in statuses if status]
+    if not statuses:
+        return "unknown"
+    if "error" in statuses:
+        return "error"
+    if "warning" in statuses:
+        return "warning"
+    if "unknown" in statuses:
+        return "warning" if "ok" in statuses else "unknown"
+    return "ok"
+
+
+def parse_network_diagnostics_output(lines):
+    sections = _split_double_equal_sections(lines)
+    by_title = {section["title"]: section for section in sections}
+    checks = []
+    for section in sections:
+        title = section["title"]
+        for line in _meaningful_lines(section["lines"]):
+            if line.startswith("[OK] "):
+                checks.append({"name": line[5:], "status": "ok", "section": title})
+            elif line.startswith("[FAIL] "):
+                checks.append({"name": line[7:], "status": "error", "section": title})
+
+    check_by_name = {check["name"]: check for check in checks}
+
+    def check_status(name):
+        return check_by_name.get(name, {}).get("status", "unknown")
+
+    groups = [
+        {
+            "title": "远端地址",
+            "status": "ok" if _meaningful_lines(by_title.get("IP addresses", {}).get("lines", [])) else "unknown",
+            "summary": _section_summary(by_title.get("IP addresses", {}).get("lines", []), 3),
+        },
+        {
+            "title": "公网连通",
+            "status": check_status("Ping public IP 8.8.8.8"),
+            "summary": "Ping public IP 8.8.8.8: {}".format(
+                CHECK_STATUS_TEXT.get(check_status("Ping public IP 8.8.8.8"), "未检测")
+            ),
+        },
+        {
+            "title": "DNS / GitHub",
+            "status": _combined_statuses([
+                check_status("DNS github.com"),
+                check_status("Ping github.com"),
+                check_status("HTTPS github.com"),
+            ]),
+            "summary": "DNS: {}\nPing: {}\nHTTPS: {}".format(
+                CHECK_STATUS_TEXT.get(check_status("DNS github.com"), "未检测"),
+                CHECK_STATUS_TEXT.get(check_status("Ping github.com"), "未检测"),
+                CHECK_STATUS_TEXT.get(check_status("HTTPS github.com"), "未检测"),
+            ),
+        },
+        {
+            "title": "Windows 代理",
+            "status": check_status("Windows proxy port"),
+            "summary": "代理端口: {}".format(CHECK_STATUS_TEXT.get(check_status("Windows proxy port"), "未检测")),
+        },
+        {
+            "title": "pip / apt",
+            "status": "ok" if (
+                _meaningful_lines(by_title.get("pip config", {}).get("lines", []))
+                or _meaningful_lines(by_title.get("apt sources", {}).get("lines", []))
+            ) else "unknown",
+            "summary": "pip: {}\napt: {}".format(
+                _section_summary(by_title.get("pip config", {}).get("lines", []), 1),
+                _section_summary(by_title.get("apt sources", {}).get("lines", []), 2),
+            ),
+        },
+    ]
+    summary = {status: 0 for status in CHECK_STATUS_TEXT}
+    for group in groups:
+        summary[group["status"]] = summary.get(group["status"], 0) + 1
+    return {
+        "groups": groups,
+        "checks": checks,
+        "summary": summary,
+    }
+
+
+def parse_peripheral_check_output(lines):
+    sections = _split_double_equal_sections(lines)
+    by_title = {section["title"]: section for section in sections}
+    specs = [
+        ("USB", "USB"),
+        ("Video devices", "摄像头"),
+        ("Display", "显示"),
+        ("Storage", "磁盘"),
+        ("Network interfaces", "网卡"),
+        ("I2C / SPI", "I2C / SPI"),
+    ]
+    items = []
+    for section_title, display_title in specs:
+        section_lines = by_title.get(section_title, {}).get("lines", [])
+        meaningful = _meaningful_lines(section_lines)
+        text = "\n".join(meaningful).lower()
+        if not meaningful:
+            status = "unknown"
+        elif any(marker in text for marker in ("不可用", "未发现", "not found", "no such file")):
+            status = "warning"
+        else:
+            status = "ok"
+        items.append({
+            "title": display_title,
+            "status": status,
+            "status_text": CHECK_STATUS_TEXT.get(status, status),
+            "summary": _section_summary(section_lines, 4),
+            "details": "\n".join(meaningful),
+        })
+    summary = {status: 0 for status in CHECK_STATUS_TEXT}
+    for item in items:
+        summary[item["status"]] = summary.get(item["status"], 0) + 1
+    return {
+        "items": items,
+        "summary": summary,
+    }
+
+
+def parse_process_list_output(lines):
+    rows = []
+    for raw_line in lines:
+        line = str(raw_line).strip()
+        if not line or line.startswith("PID ") or line.startswith("开始:") or line.startswith("+ "):
+            continue
+        parts = line.split(None, 5)
+        if len(parts) < 6 or not parts[0].isdigit():
+            continue
+        rows.append({
+            "pid": parts[0],
+            "ppid": parts[1],
+            "cpu": parts[2],
+            "mem": parts[3],
+            "elapsed": parts[4],
+            "command": parts[5],
+        })
+    return rows
+
+
+def parse_file_list_output(lines):
+    path = ""
+    rows = []
+    for raw_line in lines:
+        line = str(raw_line).rstrip("\r\n")
+        stripped = line.strip()
+        if stripped.startswith("Listing:"):
+            path = stripped.split(":", 1)[1].strip()
+            continue
+        if not stripped or stripped.startswith("total "):
+            continue
+        parts = stripped.split(None, 8)
+        if len(parts) < 9 or not parts[0]:
+            continue
+        mode = parts[0]
+        if mode[0] not in "-dlcbsp":
+            continue
+        rows.append({
+            "mode": mode,
+            "owner": parts[2],
+            "group": parts[3],
+            "size": parts[4],
+            "modified": " ".join(parts[5:8]),
+            "name": parts[8],
+        })
+    return {
+        "path": path,
+        "rows": rows,
+    }
+
+
+def parse_service_status_output(lines):
+    meaningful = _meaningful_lines(lines)
+    text = "\n".join(meaningful)
+    active = ""
+    loaded = ""
+    pid = ""
+    summary = ""
+    for line in meaningful:
+        stripped = line.strip()
+        if not summary and ".service" in stripped:
+            summary = stripped
+        if stripped.startswith("Loaded:"):
+            loaded = stripped
+        elif stripped.startswith("Active:"):
+            active = stripped
+        elif stripped.startswith("Main PID:"):
+            pid = stripped
+
+    lower_active = active.lower()
+    if "active (running)" in lower_active or "active (exited)" in lower_active:
+        status = "ok"
+    elif "inactive" in lower_active or "dead" in lower_active:
+        status = "warning"
+    elif "failed" in lower_active:
+        status = "error"
+    elif active:
+        status = "unknown"
+    else:
+        status = "error" if any("could not be found" in line.lower() or "not-found" in line.lower() for line in meaningful) else "unknown"
+
+    return {
+        "status": status,
+        "status_text": CHECK_STATUS_TEXT.get(status, status),
+        "summary": summary or "服务状态输出",
+        "active": active or "Active: 未检测",
+        "loaded": loaded or "Loaded: 未检测",
+        "pid": pid or "Main PID: 未检测",
+        "details": text,
+    }
 
 
 def _refuse_remote_path_command(action, remote_path, reason):

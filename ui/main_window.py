@@ -4,28 +4,37 @@
 
 import base64
 import os
+import shlex
+import shutil
 import socket
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 from PyQt5.QtCore import QSettings, QTimer, Qt
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QMenu,
     QPushButton,
     QPlainTextEdit,
     QScrollArea,
+    QSplitter,
     QStackedWidget,
     QStyle,
+    QTableWidgetItem,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -35,14 +44,14 @@ from core.config_store import ProjectConfigStore, slugify
 from core.paths import DEFAULTS, PATHS
 from core.settings import settings_bool
 from core.task_history import TaskHistoryStore
-from services import device_health_service, display_service, proxy_service, remote_ops_service, ssh_service
+from core.ssh_workers import SftpWorker, SshTerminalWorker
+from services import device_health_service, display_service, paramiko_service, proxy_service, remote_ops_service, ssh_service
 from ui.pages.display_page import build_display_page
 from ui.pages.devices_page import build_devices_page
 from ui.pages.health_page import build_health_page
 from ui.pages.help_page import build_help_page
 from ui.pages.logs_page import build_logs_page
 from ui.pages.environment_page import build_environment_page
-from ui.pages.files_page import build_files_page
 from ui.pages.network_page import build_network_page
 from ui.pages.model_page import build_model_page
 from ui.pages.peripheral_page import build_peripheral_page
@@ -51,6 +60,7 @@ from ui.pages.proxy_page import build_proxy_page
 from ui.pages.project_page import build_project_page
 from ui.pages.runtime_page import build_runtime_page
 from ui.pages.service_page import build_service_page
+from ui.pages.terminal_page import build_terminal_page
 from ui.pages.report_page import build_report_page
 from ui.pages.transfer_page import build_transfer_page
 from ui.pages.workbench_page import build_workbench_page
@@ -145,6 +155,36 @@ class JetsonControlPanel(QMainWindow):
         self.xauthority_edit = None
         self.framebuffer_fallback_check = None
         self.health_labels = {}
+        self.environment_summary_label = {}
+        self.environment_result_labels = {}
+        self.environment_updated_label = None
+        self.environment_init_text = None
+        self.network_result_labels = {}
+        self.network_checks_text = None
+        self.peripheral_result_labels = {}
+        self.process_summary_label = None
+        self.process_table = None
+        self.files_summary_label = None
+        self.files_table = None
+        self.local_files_table = None
+        self.remote_files_table = None
+        self.local_dir_tree = None
+        self.remote_dir_tree = None
+        self.local_file_count_label = None
+        self.remote_file_count_label = None
+        self.transfer_progress_bar = None
+        self.sftp_worker = None
+        self.sftp_password = None
+        self.pending_sftp_retry = None
+        self.pending_sftp_refresh = None
+        self.remote_tree_nodes_by_path = {}
+        self.service_result_labels = {}
+        self.service_status_text = None
+        self.terminal_status_label = None
+        self.terminal_output_edit = None
+        self.terminal_input_edit = None
+        self.terminal_worker = None
+        self.terminal_password = None
         self.health_refresh_button = None
         self.health_auto_check = None
         self.health_interval_combo = None
@@ -190,7 +230,11 @@ class JetsonControlPanel(QMainWindow):
         self.stop_button = None
         self.command_buttons = []
         self.nav_buttons = []
+        self.nav_page_keys = []
+        self.page_key_to_index = {}
+        self.navigation_groups = []
         self.page_stack = None
+        self.log_splitter = None
         self.current_command_title = None
         self.current_command_output = []
         self.current_command_started = None
@@ -212,6 +256,7 @@ class JetsonControlPanel(QMainWindow):
         self._append_log("就绪。")
 
     def _build_ui(self):
+        self.navigation_groups = self._navigation_groups()
         central = QWidget()
         root_layout = QHBoxLayout(central)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -244,32 +289,32 @@ class JetsonControlPanel(QMainWindow):
         self.active_project_combo = QComboBox()
         self.active_project_combo.currentIndexChanged.connect(self._active_project_changed)
         selector_layout.addWidget(self.active_project_combo, 1)
+        selector_layout.addWidget(QLabel("远端 SSH"))
+        self.remote_edit = QLineEdit(self.defaults.remote)
+        self.remote_edit.setPlaceholderText("jetson@192.168.55.1 或 192.168.55.1")
+        self.remote_edit.editingFinished.connect(self._top_remote_editing_finished)
+        selector_layout.addWidget(self.remote_edit, 2)
+        connect_button = QPushButton("连接")
+        connect_button.setObjectName("PrimaryButton")
+        connect_button.clicked.connect(self.test_ssh)
+        self.command_buttons.append(connect_button)
+        selector_layout.addWidget(connect_button)
         header_text.addLayout(selector_layout)
         header_layout.addLayout(header_text, 1)
-        header_layout.addWidget(self._build_status_strip(), 2)
+        header_layout.addWidget(self._build_status_strip())
         main_layout.addLayout(header_layout)
 
         self.page_stack = QStackedWidget()
         self.page_stack.setObjectName("PageStack")
-        self.page_stack.addWidget(build_workbench_page(self))
-        self.page_stack.addWidget(build_proxy_page(self))
-        self.page_stack.addWidget(build_transfer_page(self))
-        self.page_stack.addWidget(build_project_page(self))
-        self.page_stack.addWidget(build_runtime_page(self))
-        self.page_stack.addWidget(build_process_page(self))
-        self.page_stack.addWidget(build_logs_page(self))
-        self.page_stack.addWidget(build_network_page(self))
-        self.page_stack.addWidget(build_environment_page(self))
-        self.page_stack.addWidget(build_peripheral_page(self))
-        self.page_stack.addWidget(build_files_page(self))
-        self.page_stack.addWidget(build_service_page(self))
-        self.page_stack.addWidget(build_model_page(self))
-        self.page_stack.addWidget(build_devices_page(self))
-        self.page_stack.addWidget(build_report_page(self))
-        self.page_stack.addWidget(build_health_page(self))
-        self.page_stack.addWidget(build_display_page(self))
-        self.page_stack.addWidget(build_help_page(self))
-        main_layout.addWidget(self.page_stack, 1)
+        for key, _text, _icon, builder in self._flatten_navigation_groups():
+            self.page_key_to_index[key] = self.page_stack.count()
+            self.page_stack.addWidget(builder(self))
+
+        self.log_splitter = QSplitter(Qt.Vertical)
+        self.log_splitter.setObjectName("MainLogSplitter")
+        self.log_splitter.setChildrenCollapsible(False)
+        self.log_splitter.setHandleWidth(8)
+        self.log_splitter.addWidget(self.page_stack)
 
         log_header = QHBoxLayout()
         log_title = QLabel("日志")
@@ -283,7 +328,6 @@ class JetsonControlPanel(QMainWindow):
         log_header.addStretch(1)
         log_header.addWidget(clear_button)
         log_header.addWidget(self.stop_button)
-        main_layout.addLayout(log_header)
 
         self.log_edit = QPlainTextEdit()
         self.log_edit.setReadOnly(True)
@@ -292,19 +336,80 @@ class JetsonControlPanel(QMainWindow):
         log_font.setStyleHint(QFont.Monospace)
         log_font.setPointSize(10)
         self.log_edit.setFont(log_font)
-        self.log_edit.setMinimumHeight(120)
-        self.log_edit.setMaximumHeight(180)
-        main_layout.addWidget(self.log_edit)
+        self.log_edit.setMinimumHeight(80)
+
+        log_panel = QWidget()
+        log_panel.setObjectName("LogPanel")
+        log_layout = QVBoxLayout(log_panel)
+        log_layout.setContentsMargins(0, 0, 0, 0)
+        log_layout.setSpacing(8)
+        log_layout.addLayout(log_header)
+        log_layout.addWidget(self.log_edit)
+        log_panel.setMinimumHeight(110)
+
+        self.log_splitter.addWidget(log_panel)
+        self.log_splitter.setStretchFactor(0, 1)
+        self.log_splitter.setStretchFactor(1, 0)
+        self.log_splitter.setSizes([560, 160])
+        main_layout.addWidget(self.log_splitter, 1)
 
         root_layout.addWidget(main, 1)
         self.setCentralWidget(central)
 
+    def _navigation_groups(self):
+        style = self.style()
+        return [
+            (
+                "常用",
+                [
+                    ("workbench", "工作台", style.standardIcon(QStyle.SP_DesktopIcon), build_workbench_page),
+                    ("proxy", "代理设置", style.standardIcon(QStyle.SP_DriveNetIcon), build_proxy_page),
+                    ("health", "设备状态", style.standardIcon(QStyle.SP_ComputerIcon), build_health_page),
+                    ("terminal", "SSH 工作台", style.standardIcon(QStyle.SP_ComputerIcon), build_terminal_page),
+                    ("runtime", "运行控制", style.standardIcon(QStyle.SP_MediaPlay), build_runtime_page),
+                    ("logs", "日志查看", style.standardIcon(QStyle.SP_FileIcon), build_logs_page),
+                    ("process", "进程管理", style.standardIcon(QStyle.SP_FileDialogDetailedView), build_process_page),
+                ],
+            ),
+            (
+                "项目",
+                [
+                    ("transfer", "项目传输", style.standardIcon(QStyle.SP_DirIcon), build_transfer_page),
+                    ("project", "项目配置", style.standardIcon(QStyle.SP_FileDialogContentsView), build_project_page),
+                    ("service", "服务管理", style.standardIcon(QStyle.SP_BrowserReload), build_service_page),
+                    ("model", "模型部署", style.standardIcon(QStyle.SP_ArrowForward), build_model_page),
+                ],
+            ),
+            (
+                "诊断",
+                [
+                    ("network", "网络诊断", style.standardIcon(QStyle.SP_DriveNetIcon), build_network_page),
+                    ("environment", "环境检查", style.standardIcon(QStyle.SP_DialogApplyButton), build_environment_page),
+                    ("peripheral", "外设检测", style.standardIcon(QStyle.SP_DriveHDIcon), build_peripheral_page),
+                    ("display", "显示设置", style.standardIcon(QStyle.SP_ComputerIcon), build_display_page),
+                    ("report", "诊断报告", style.standardIcon(QStyle.SP_FileDialogInfoView), build_report_page),
+                ],
+            ),
+            (
+                "配置",
+                [
+                    ("devices", "设备档案", style.standardIcon(QStyle.SP_FileDialogListView), build_devices_page),
+                    ("help", "命令参考", style.standardIcon(QStyle.SP_FileDialogInfoView), build_help_page),
+                ],
+            ),
+        ]
+
+    def _flatten_navigation_groups(self):
+        for _group_title, items in self.navigation_groups:
+            for item in items:
+                yield item
+
     def _build_sidebar(self):
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(156)
+        sidebar.setFixedWidth(168)
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(10, 14, 10, 14)
+        layout.setContentsMargins(10, 14, 10, 12)
         layout.setSpacing(6)
 
         brand = QLabel("Jetson")
@@ -315,37 +420,24 @@ class JetsonControlPanel(QMainWindow):
         layout.addWidget(product)
         layout.addSpacing(14)
 
-        style = self.style()
-        nav_specs = [
-            ("工作台", style.standardIcon(QStyle.SP_DesktopIcon)),
-            ("代理", style.standardIcon(QStyle.SP_DriveNetIcon)),
-            ("项目传输", style.standardIcon(QStyle.SP_DirIcon)),
-            ("项目配置", style.standardIcon(QStyle.SP_FileDialogContentsView)),
-            ("运行控制", style.standardIcon(QStyle.SP_MediaPlay)),
-            ("进程管理", style.standardIcon(QStyle.SP_FileDialogDetailedView)),
-            ("日志查看", style.standardIcon(QStyle.SP_FileIcon)),
-            ("网络诊断", style.standardIcon(QStyle.SP_DriveNetIcon)),
-            ("环境检查", style.standardIcon(QStyle.SP_DialogApplyButton)),
-            ("外设检测", style.standardIcon(QStyle.SP_DriveHDIcon)),
-            ("文件管理", style.standardIcon(QStyle.SP_DirOpenIcon)),
-            ("服务管理", style.standardIcon(QStyle.SP_BrowserReload)),
-            ("模型部署", style.standardIcon(QStyle.SP_ArrowForward)),
-            ("设备档案", style.standardIcon(QStyle.SP_FileDialogListView)),
-            ("诊断报告", style.standardIcon(QStyle.SP_FileDialogInfoView)),
-            ("设备状态", style.standardIcon(QStyle.SP_ComputerIcon)),
-            ("显示设置", style.standardIcon(QStyle.SP_ComputerIcon)),
-            ("命令参考", style.standardIcon(QStyle.SP_FileDialogInfoView)),
-        ]
-
         nav_container = QWidget()
         nav_layout = QVBoxLayout(nav_container)
         nav_layout.setContentsMargins(0, 0, 0, 0)
-        nav_layout.setSpacing(4)
-        for index, (text, icon) in enumerate(nav_specs):
-            button = self._build_nav_button(text, icon)
-            button.clicked.connect(lambda checked=False, page=index: self._switch_page(page))
-            self.nav_buttons.append(button)
-            nav_layout.addWidget(button)
+        nav_layout.setSpacing(3)
+        page_index = 0
+        for group_title, items in self.navigation_groups:
+            group_label = QLabel(group_title)
+            group_label.setObjectName("NavGroupLabel")
+            nav_layout.addWidget(group_label)
+            for key, text, icon, _builder in items:
+                button = self._build_nav_button(text, icon)
+                button.clicked.connect(lambda checked=False, page=page_index: self._switch_page(page))
+                button.setProperty("page_key", key)
+                self.nav_buttons.append(button)
+                self.nav_page_keys.append(key)
+                nav_layout.addWidget(button)
+                page_index += 1
+            nav_layout.addSpacing(6)
         nav_layout.addStretch(1)
 
         nav_scroll = QScrollArea()
@@ -356,7 +448,8 @@ class JetsonControlPanel(QMainWindow):
         nav_scroll.setWidget(nav_container)
         layout.addWidget(nav_scroll, 1)
 
-        settings_button = self._build_nav_button("设置", style.standardIcon(QStyle.SP_FileDialogDetailedView))
+        style = self.style()
+        settings_button = self._build_nav_button("数据位置", style.standardIcon(QStyle.SP_FileDialogDetailedView))
         settings_button.setCheckable(False)
         settings_button.clicked.connect(self._show_settings_info)
         about_button = self._build_nav_button("关于", style.standardIcon(QStyle.SP_MessageBoxInformation))
@@ -390,6 +483,7 @@ class JetsonControlPanel(QMainWindow):
     def _build_status_card(self, kind, title, value, detail):
         card = QFrame()
         card.setObjectName("StatusCard")
+        card.setFixedWidth(176)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(4)
@@ -429,6 +523,12 @@ class JetsonControlPanel(QMainWindow):
         for button_index, button in enumerate(self.nav_buttons):
             button.setChecked(button_index == index)
         self.settings.setValue("window/current_page", index)
+        if 0 <= index < len(self.nav_page_keys):
+            self.settings.setValue("window/current_page_key", self.nav_page_keys[index])
+
+    def _switch_page_by_key(self, key, fallback_index=0):
+        index = self.page_key_to_index.get(str(key), fallback_index)
+        self._switch_page(index)
 
     def _update_status(self, kind, state, detail):
         labels = self.status_labels.get(kind)
@@ -491,6 +591,20 @@ class JetsonControlPanel(QMainWindow):
             QWidget#MainSurface {
                 background: #f4f6fa;
             }
+            QScrollArea#PageScroll, QWidget#PageScrollContent {
+                background: transparent;
+                border: none;
+            }
+            QWidget#LogPanel {
+                background: transparent;
+            }
+            QSplitter#MainLogSplitter::handle {
+                background: #dbe3ef;
+                border-radius: 3px;
+            }
+            QSplitter#MainLogSplitter::handle:hover {
+                background: #b8c7dc;
+            }
             QFrame#Sidebar {
                 background: #ffffff;
                 border-right: 1px solid #dde3ec;
@@ -503,6 +617,12 @@ class JetsonControlPanel(QMainWindow):
             QLabel#SidebarProduct {
                 color: #667085;
                 font-size: 12px;
+            }
+            QLabel#NavGroupLabel {
+                color: #98a2b3;
+                font-size: 11px;
+                font-weight: 700;
+                padding: 8px 8px 3px 8px;
             }
             QLabel#Title {
                 color: #172033;
@@ -547,6 +667,142 @@ class JetsonControlPanel(QMainWindow):
                 border: 1px solid #e3e9f2;
                 border-radius: 6px;
             }
+            QWidget#MetricBox[state="ok"], QFrame#MetricBox[state="ok"] {
+                background: #f0fdf4;
+                border-color: #bbf7d0;
+            }
+            QWidget#MetricBox[state="warning"], QFrame#MetricBox[state="warning"] {
+                background: #fffbeb;
+                border-color: #fde68a;
+            }
+            QWidget#MetricBox[state="error"], QFrame#MetricBox[state="error"] {
+                background: #fef2f2;
+                border-color: #fecaca;
+            }
+            QWidget#MetricBox[state="unknown"], QFrame#MetricBox[state="unknown"] {
+                background: #f8fafc;
+                border-color: #cbd5e1;
+            }
+            QFrame#EnvResultCard {
+                background: #ffffff;
+                border: 1px solid #dde3ec;
+                border-radius: 8px;
+            }
+            QFrame#EnvResultCard[state="ok"] {
+                border-color: #86efac;
+            }
+            QFrame#EnvResultCard[state="warning"] {
+                border-color: #facc15;
+            }
+            QFrame#EnvResultCard[state="error"] {
+                border-color: #fca5a5;
+            }
+            QFrame#EnvResultCard[state="unknown"] {
+                border-color: #cbd5e1;
+            }
+            QFrame#ResultCard {
+                background: #ffffff;
+                border: 1px solid #dde3ec;
+                border-radius: 8px;
+            }
+            QFrame#ResultCard[state="ok"] {
+                border-color: #86efac;
+            }
+            QFrame#ResultCard[state="warning"] {
+                border-color: #facc15;
+            }
+            QFrame#ResultCard[state="error"] {
+                border-color: #fca5a5;
+            }
+            QFrame#ResultCard[state="unknown"] {
+                border-color: #cbd5e1;
+            }
+            QLabel#EnvBadge {
+                background: #eef2f7;
+                border-radius: 10px;
+                color: #475569;
+                font-size: 11px;
+                font-weight: 700;
+                padding: 3px 8px;
+            }
+            QLabel#EnvBadge[state="ok"] {
+                background: #dcfce7;
+                color: #166534;
+            }
+            QLabel#EnvBadge[state="warning"] {
+                background: #fef3c7;
+                color: #92400e;
+            }
+            QLabel#EnvBadge[state="error"] {
+                background: #fee2e2;
+                color: #991b1b;
+            }
+            QLabel#EnvBadge[state="unknown"] {
+                background: #e2e8f0;
+                color: #475569;
+            }
+            QLabel#EnvBadge[state="pending"] {
+                background: #e0ecff;
+                color: #1d4ed8;
+            }
+            QLabel#StatusBadge {
+                background: #eef2f7;
+                border-radius: 10px;
+                color: #475569;
+                font-size: 11px;
+                font-weight: 700;
+                padding: 3px 8px;
+            }
+            QLabel#StatusBadge[state="ok"] {
+                background: #dcfce7;
+                color: #166534;
+            }
+            QLabel#StatusBadge[state="warning"] {
+                background: #fef3c7;
+                color: #92400e;
+            }
+            QLabel#StatusBadge[state="error"] {
+                background: #fee2e2;
+                color: #991b1b;
+            }
+            QLabel#StatusBadge[state="unknown"] {
+                background: #e2e8f0;
+                color: #475569;
+            }
+            QLabel#StatusBadge[state="pending"] {
+                background: #e0ecff;
+                color: #1d4ed8;
+            }
+            QLabel#FileCountBadge {
+                background: #eef2f7;
+                border: 1px solid #dbe3ef;
+                border-radius: 12px;
+                color: #475569;
+                font-size: 11px;
+                font-weight: 700;
+                padding: 4px 9px;
+            }
+            QLabel#FileCountBadge[selected="true"] {
+                background: #eff6ff;
+                border-color: #bfdbfe;
+                color: #1d4ed8;
+            }
+            QTableWidget, QTreeWidget {
+                background: #ffffff;
+                border: 1px solid #dde3ec;
+                border-radius: 6px;
+                gridline-color: #e5ebf3;
+                alternate-background-color: #f8fbff;
+                color: #172033;
+            }
+            QHeaderView::section {
+                background: #f4f7fb;
+                border: none;
+                border-bottom: 1px solid #dde3ec;
+                color: #465568;
+                font-weight: 700;
+                padding: 6px;
+            }
             QFrame#StatusCard {
                 background: #ffffff;
                 border: 1px solid #dde3ec;
@@ -590,6 +846,25 @@ class JetsonControlPanel(QMainWindow):
                 background: #fbfcfe;
                 border-color: #dde3ec;
             }
+            QPlainTextEdit#TerminalOutput {
+                background: #0f172a;
+                border-color: #1e293b;
+                color: #e5e7eb;
+                selection-background-color: #2563eb;
+            }
+            QLineEdit#TerminalInput {
+                background: #111827;
+                border-color: #334155;
+                color: #f8fafc;
+                selection-background-color: #2563eb;
+            }
+            QSplitter::handle {
+                background: #dbe3ef;
+                border-radius: 3px;
+            }
+            QSplitter::handle:hover {
+                background: #b8c7dc;
+            }
             QPushButton {
                 background: #ffffff;
                 border: 1px solid #ccd5e2;
@@ -625,7 +900,7 @@ class JetsonControlPanel(QMainWindow):
                 border: 1px solid transparent;
                 border-radius: 8px;
                 color: #465568;
-                padding: 8px 10px;
+                padding: 7px 9px;
                 text-align: left;
             }
             QPushButton#NavButton:hover {
@@ -650,7 +925,7 @@ class JetsonControlPanel(QMainWindow):
 
     def refresh_ips(self):
         addresses = local_ipv4_candidates()
-        current = self.ip_combo.currentText().strip() if self.ip_combo else ""
+        current = self.ip_combo.currentText().strip() if self.ip_combo is not None else ""
         self.ip_combo.clear()
         if addresses:
             self.ip_combo.addItems(addresses)
@@ -702,13 +977,38 @@ class JetsonControlPanel(QMainWindow):
         except (TypeError, ValueError):
             return default
 
+    def _normalize_remote_text(self, text):
+        remote = str(text or "").strip()
+        if remote and "@" not in remote:
+            remote = "jetson@{}".format(remote)
+        return remote
+
+    def _top_remote_editing_finished(self):
+        if self.remote_edit is None:
+            return
+        remote = self._normalize_remote_text(self.remote_edit.text())
+        if remote != self.remote_edit.text().strip():
+            self.remote_edit.setText(remote)
+        if not remote:
+            return
+
+        device = self._current_device()
+        if device.get("id"):
+            payload = dict(device)
+            payload["ssh"] = remote
+            self.config_store.upsert_device(payload)
+            self._refresh_config_selectors()
+        if self.device_remote_edit is not None:
+            self.device_remote_edit.setText(remote)
+        self._refresh_workbench()
+
     def _combo_current_data(self, combo):
-        if not combo or combo.currentIndex() < 0:
+        if combo is None or combo.currentIndex() < 0:
             return None
         return combo.itemData(combo.currentIndex())
 
     def _set_combo_by_data(self, combo, value):
-        if not combo:
+        if combo is None:
             return
         for index in range(combo.count()):
             if combo.itemData(index) == value:
@@ -716,7 +1016,7 @@ class JetsonControlPanel(QMainWindow):
                 return
 
     def _refresh_config_selectors(self):
-        if not self.active_device_combo or not self.active_project_combo:
+        if self.active_device_combo is None or self.active_project_combo is None:
             return
 
         active_device = self.config_store.active_device() or {}
@@ -725,7 +1025,7 @@ class JetsonControlPanel(QMainWindow):
         self.active_device_combo.blockSignals(True)
         self.active_device_combo.clear()
         for device in self.config_store.devices():
-            label = "{} ({})".format(device.get("name", device.get("id")), device.get("ssh", ""))
+            label = device.get("name", device.get("id"))
             self.active_device_combo.addItem(label, device.get("id"))
         self._set_combo_by_data(self.active_device_combo, active_device.get("id"))
         self.active_device_combo.blockSignals(False)
@@ -767,7 +1067,7 @@ class JetsonControlPanel(QMainWindow):
             self.remote_edit.setText(device.get("ssh", self.defaults.remote))
         if self.port_spin:
             self.port_spin.setValue(int(device.get("proxy_port", self.defaults.proxy_port) or self.defaults.proxy_port))
-        if self.ip_combo and device.get("proxy_host"):
+        if self.ip_combo is not None and device.get("proxy_host"):
             self._set_combo_text(self.ip_combo, device.get("proxy_host"))
         if self.network_windows_ip_edit:
             self.network_windows_ip_edit.setText(device.get("proxy_host", self.ip_combo.currentText()))
@@ -778,13 +1078,17 @@ class JetsonControlPanel(QMainWindow):
             self.remote_path_edit.setText(project.get("remote_root", self.defaults.remote_path))
         if self.local_root_edit:
             self.local_root_edit.setText(project.get("local_root", str(self.paths.app_dir)))
+        if self.remote_file_path_edit:
+            self.remote_file_path_edit.setText(project.get("remote_root", self.defaults.remote_path))
+        if self.local_file_path_edit:
+            self.local_file_path_edit.setText(project.get("local_root", str(self.paths.app_dir)))
         if self.run_workdir_edit:
             self.run_workdir_edit.setText(project.get("remote_root", self.defaults.remote_path))
         if self.run_command_edit:
             self.run_command_edit.setText(project.get("run_command", "python3 detect.py"))
         if self.pkill_pattern_edit:
             self.pkill_pattern_edit.setText(project.get("stop_pattern", "detect.py"))
-        if self.log_tail_target_combo:
+        if self.log_tail_target_combo is not None:
             self._set_combo_text(self.log_tail_target_combo, project.get("log_target", "run-control.log"))
         if self.model_workdir_edit:
             self.model_workdir_edit.setText(project.get("remote_root", self.defaults.remote_path))
@@ -793,11 +1097,13 @@ class JetsonControlPanel(QMainWindow):
         self._load_device_config_to_form(device, project)
         self._refresh_workbench()
         self._refresh_remote_path_bookmarks()
+        if self.local_files_table is not None:
+            self.refresh_local_files(warn=False)
 
     def _apply_first_model_profile(self, project):
         profiles = project.get("model_profiles", []) if isinstance(project, dict) else []
         profile = profiles[0] if profiles else {}
-        if self.model_profile_combo:
+        if self.model_profile_combo is not None:
             current = self.model_profile_combo.currentData()
             self.model_profile_combo.blockSignals(True)
             self.model_profile_combo.clear()
@@ -816,7 +1122,7 @@ class JetsonControlPanel(QMainWindow):
             self.model_output_edit.setText(profile.get("output", self.model_output_edit.text() or "model.engine"))
         if self.model_test_image_edit:
             self.model_test_image_edit.setText(profile.get("test_image", self.model_test_image_edit.text() or "test.jpg"))
-        if self.model_precision_combo:
+        if self.model_precision_combo is not None:
             self._set_combo_text(self.model_precision_combo, profile.get("precision", "fp16"))
 
     def _load_project_config_to_form(self, project):
@@ -876,7 +1182,7 @@ class JetsonControlPanel(QMainWindow):
         return result
 
     def _refresh_remote_path_bookmarks(self):
-        if not self.remote_path_bookmark_combo:
+        if self.remote_path_bookmark_combo is None:
             return
         current = self.remote_path_bookmark_combo.currentText()
         self.remote_path_bookmark_combo.blockSignals(True)
@@ -888,7 +1194,7 @@ class JetsonControlPanel(QMainWindow):
             self._set_combo_text(self.remote_path_bookmark_combo, current)
 
     def _persist_active_config_from_forms(self):
-        if not self.remote_edit or not self.remote_path_edit:
+        if self.remote_edit is None or self.remote_path_edit is None:
             return
         context = self._active_context()
         device = context["device"]
@@ -900,8 +1206,8 @@ class JetsonControlPanel(QMainWindow):
             "id": device_id,
             "name": device.get("name", device_id),
             "type": device.get("type", "linux"),
-            "ssh": self.remote_edit.text().strip(),
-            "proxy_host": self.ip_combo.currentText().strip() if self.ip_combo else device.get("proxy_host", ""),
+            "ssh": self._normalize_remote_text(self.remote_edit.text()),
+            "proxy_host": self.ip_combo.currentText().strip() if self.ip_combo is not None else device.get("proxy_host", ""),
             "proxy_port": self.port_spin.value() if self.port_spin else device.get("proxy_port", self.defaults.proxy_port),
         })
 
@@ -915,7 +1221,7 @@ class JetsonControlPanel(QMainWindow):
             "build_command": self.project_build_command_edit.text().strip() if self.project_build_command_edit else project.get("build_command", ""),
             "run_command": self.run_command_edit.text().strip() if self.run_command_edit else project.get("run_command", ""),
             "stop_pattern": self.pkill_pattern_edit.text().strip() if self.pkill_pattern_edit else project.get("stop_pattern", ""),
-            "log_target": self.log_tail_target_combo.currentText().strip() if self.log_tail_target_combo else project.get("log_target", ""),
+            "log_target": self.log_tail_target_combo.currentText().strip() if self.log_tail_target_combo is not None else project.get("log_target", ""),
         })
         self.config_store.upsert_project(project_payload)
         self._refresh_workbench()
@@ -966,18 +1272,38 @@ class JetsonControlPanel(QMainWindow):
         self._set_combo_text(self.model_precision_combo, self.settings.value("model/precision", "fp16"))
         self.report_dir_edit.setText(str(self.settings.value("report/dir", self.report_dir_edit.text())))
         self._refresh_device_profile_combo()
-        self._switch_page(self._setting_int("window/current_page", 0))
+        saved_page_key = self.settings.value("window/current_page_key")
+        if saved_page_key:
+            self._switch_page_by_key(saved_page_key, self._setting_int("window/current_page", 0))
+        else:
+            self._switch_page(0)
+        if self.log_splitter is not None:
+            sizes_text = str(self.settings.value("window/log_splitter_sizes", ""))
+            try:
+                sizes = [int(part) for part in sizes_text.split(",") if part.strip()]
+            except ValueError:
+                sizes = []
+            if len(sizes) == 2 and min(sizes) > 0:
+                self.log_splitter.setSizes(sizes)
 
     def _save_settings(self):
         self.settings.setValue("window/geometry", self.saveGeometry())
-        self.settings.setValue("window/current_page", self.page_stack.currentIndex() if self.page_stack else 0)
+        current_page = self.page_stack.currentIndex() if self.page_stack else 0
+        self.settings.setValue("window/current_page", current_page)
+        if 0 <= current_page < len(self.nav_page_keys):
+            self.settings.setValue("window/current_page_key", self.nav_page_keys[current_page])
+        if self.log_splitter is not None:
+            self.settings.setValue(
+                "window/log_splitter_sizes",
+                ",".join(str(size) for size in self.log_splitter.sizes()),
+            )
 
         self.settings.setValue("proxy/windows_ip", self.ip_combo.currentText().strip())
         self.settings.setValue("proxy/port", self.port_spin.value())
         self.settings.setValue("proxy/remote_address", self.remote_address_edit.text().strip())
         self.settings.setValue("proxy/clash_program", self.clash_program_edit.text().strip())
 
-        self.settings.setValue("ssh/remote", self.remote_edit.text().strip())
+        self.settings.setValue("ssh/remote", self._normalize_remote_text(self.remote_edit.text()))
         self.settings.setValue("ssh/remote_path", self.remote_path_edit.text().strip())
         self.settings.setValue("transfer/local_root", self.local_root_edit.text().strip())
         self.settings.setValue("sync/full", self.full_sync_check.isChecked())
@@ -1064,6 +1390,25 @@ class JetsonControlPanel(QMainWindow):
             self._handle_command_success(title)
         else:
             self._append_log("命令失败，退出码: {}".format(return_code))
+            if title == "开发环境检查":
+                for section_title in self.environment_result_labels:
+                    self._set_environment_result_card(section_title, "error", "失败", "检查失败，请查看底部日志")
+                for summary_title in self.environment_summary_label:
+                    self._set_environment_summary_card(summary_title, "error", "失败", "检查失败，请查看底部日志")
+            elif title == "设备初始化检查" and self.environment_init_text:
+                self.environment_init_text.setPlainText("初始化检查失败，请查看底部日志。")
+            elif title == "网络连通性诊断":
+                self._mark_check_cards_failed(self.network_result_labels, "诊断失败，请查看底部日志")
+                if self.network_checks_text:
+                    self.network_checks_text.setPlainText("诊断失败，请查看底部日志。")
+            elif title == "外设检测":
+                self._mark_check_cards_failed(self.peripheral_result_labels, "检测失败，请查看底部日志")
+            elif title == "刷新远程进程" and self.process_summary_label:
+                self.process_summary_label.setText("刷新进程失败，请查看底部日志。")
+            elif title == "列出远程文件" and self.files_summary_label:
+                self.files_summary_label.setText("列出远程文件失败，请查看底部日志。")
+            elif title.startswith("服务") and self.service_status_text:
+                self.service_status_text.setPlainText("服务操作失败，请查看底部日志。")
             self.workflow_queue = []
         self._record_task_history(title, return_code)
         self._set_running(False)
@@ -1073,7 +1418,7 @@ class JetsonControlPanel(QMainWindow):
 
     def _handle_command_success(self, title):
         if title == "测试 SSH":
-            self._update_status("ssh", "已连接", self.remote_edit.text().strip())
+            self._update_status("ssh", "已连接", self._normalize_remote_text(self.remote_edit.text()))
         elif title in ("启用临时防火墙规则", "以管理员窗口启用防火墙规则"):
             detail = "{}:{}".format(self.ip_combo.currentText().strip(), self.port_spin.value())
             self._update_status("proxy", "已启用", detail)
@@ -1088,8 +1433,30 @@ class JetsonControlPanel(QMainWindow):
         elif title == "刷新设备状态":
             data = device_health_service.parse_health_output(self.current_command_output)
             self._update_health_page(data)
+        elif title == "开发环境检查":
+            data = remote_ops_service.parse_environment_check_output(self.current_command_output)
+            self._update_environment_page(data)
+        elif title == "设备初始化检查":
+            self._update_environment_init_page()
         elif title == "生成诊断报告":
             self._save_diagnostic_report()
+        elif title == "网络连通性诊断":
+            data = remote_ops_service.parse_network_diagnostics_output(self.current_command_output)
+            self._update_network_page(data)
+        elif title == "外设检测":
+            data = remote_ops_service.parse_peripheral_check_output(self.current_command_output)
+            self._update_peripheral_page(data)
+        elif title == "刷新远程进程":
+            rows = remote_ops_service.parse_process_list_output(self.current_command_output)
+            self._update_process_table(rows)
+        elif title == "列出远程文件":
+            data = remote_ops_service.parse_file_list_output(self.current_command_output)
+            self._update_files_table(data)
+        elif title.startswith("服务status:"):
+            data = remote_ops_service.parse_service_status_output(self.current_command_output)
+            self._update_service_status_page(data)
+        elif title.startswith("服务start:") or title.startswith("服务stop:") or title.startswith("服务restart:"):
+            self._note_service_operation_complete(title)
 
     def _record_task_history(self, title, return_code):
         context = self._active_context()
@@ -1186,16 +1553,21 @@ class JetsonControlPanel(QMainWindow):
         self._append_log("已复制 Jetson 命令: " + command)
 
     def test_ssh(self):
-        remote = self.remote_edit.text().strip()
+        remote = self._normalize_remote_text(self.remote_edit.text())
+        if remote and remote != self.remote_edit.text().strip():
+            self.remote_edit.setText(remote)
         if not remote:
-            QMessageBox.warning(self, "缺少 SSH 地址", "请填写 Jetson SSH，例如 jetson@192.168.55.1。")
+            QMessageBox.warning(self, "缺少 SSH 地址", "请在窗口顶部填写远端 SSH，例如 jetson@192.168.55.1。")
             return
+        self._top_remote_editing_finished()
         self._run_command("测试 SSH", ssh_service.test_ssh_command(remote), cwd=self.paths.app_dir)
 
     def _remote_or_warn(self):
-        remote = self.remote_edit.text().strip() if self.remote_edit else ""
+        remote = self._normalize_remote_text(self.remote_edit.text()) if self.remote_edit is not None else ""
+        if remote and self.remote_edit is not None and remote != self.remote_edit.text().strip():
+            self.remote_edit.setText(remote)
         if not remote:
-            QMessageBox.warning(self, "缺少 SSH 地址", "请先在“项目传输”页填写 Jetson SSH。")
+            QMessageBox.warning(self, "缺少 SSH 地址", "请先在窗口顶部填写远端 SSH。")
             return None
         return remote
 
@@ -1208,6 +1580,102 @@ class JetsonControlPanel(QMainWindow):
             ssh_service.remote_ssh_command(remote, remote_command),
             cwd=self.paths.app_dir,
         )
+
+    def _prompt_ssh_password(self, title):
+        remote = self._normalize_remote_text(self.remote_edit.text())
+        password, ok = QInputDialog.getText(self, title, "请输入 {} 的 SSH 密码（不会保存）".format(remote), QLineEdit.Password)
+        if not ok:
+            return None
+        return password
+
+    def terminal_connect(self, password=None):
+        remote = self._remote_or_warn()
+        if not remote:
+            return
+        if self.terminal_worker and self.terminal_worker.isRunning():
+            QMessageBox.information(self, "终端已连接", "当前 SSH 终端会话仍在运行。")
+            return
+        if self.terminal_status_label:
+            self.terminal_status_label.setText("连接中...")
+        if self.terminal_output_edit:
+            self.terminal_output_edit.appendPlainText("[连接] {}".format(remote))
+        self.terminal_worker = SshTerminalWorker(remote, password=password, parent=self)
+        self.terminal_worker.output.connect(self._terminal_output)
+        self.terminal_worker.connected.connect(self._terminal_connected)
+        self.terminal_worker.auth_failed.connect(self._terminal_auth_failed)
+        self.terminal_worker.failed.connect(self._terminal_failed)
+        self.terminal_worker.disconnected.connect(self._terminal_disconnected)
+        self.terminal_worker.start()
+
+    def terminal_disconnect(self):
+        if self.terminal_worker and self.terminal_worker.isRunning():
+            self.terminal_worker.stop()
+            self.terminal_worker.wait(2000)
+        if self.terminal_status_label:
+            self.terminal_status_label.setText("已断开")
+
+    def terminal_send_command(self):
+        command = self.terminal_input_edit.text() if self.terminal_input_edit else ""
+        if not command.strip():
+            return
+        if not self.terminal_worker or not self.terminal_worker.isRunning():
+            QMessageBox.warning(self, "终端未连接", "请先连接 SSH 终端。")
+            return
+        self.terminal_worker.send_text(command + "\n")
+        self.terminal_input_edit.clear()
+
+    def terminal_interrupt(self):
+        if self.terminal_worker and self.terminal_worker.isRunning():
+            self.terminal_worker.send_interrupt()
+
+    def terminal_clear(self):
+        if self.terminal_output_edit:
+            self.terminal_output_edit.clear()
+
+    def _terminal_output(self, text):
+        if "[host key]" in text:
+            for line in str(text).splitlines():
+                if "[host key]" in line:
+                    self._append_log("SSH 终端: " + line)
+        if self.terminal_output_edit is None:
+            return
+        self.terminal_output_edit.moveCursor(QTextCursor.End)
+        self.terminal_output_edit.insertPlainText(text)
+        self.terminal_output_edit.verticalScrollBar().setValue(self.terminal_output_edit.verticalScrollBar().maximum())
+
+    def _terminal_connected(self, display):
+        self.terminal_password = self.terminal_worker.password if self.terminal_worker else self.terminal_password
+        if self.terminal_password and not self.sftp_password:
+            self.sftp_password = self.terminal_password
+        if self.terminal_status_label:
+            self.terminal_status_label.setText("已连接: " + display)
+        self._update_status("ssh", "已连接", display)
+        self._append_log("SSH 终端已连接: " + display)
+        if self.remote_files_table is not None:
+            QTimer.singleShot(200, self.refresh_remote_files)
+
+    def _terminal_auth_failed(self, error):
+        if self.terminal_worker and self.terminal_worker.password:
+            self._terminal_failed(error)
+            return
+        password = self._prompt_ssh_password("SSH 认证")
+        if password is None:
+            self._terminal_failed("SSH 认证失败。")
+            return
+        self.terminal_password = password
+        self.terminal_worker = None
+        self.terminal_connect(password=password)
+
+    def _terminal_failed(self, error):
+        if self.terminal_status_label:
+            self.terminal_status_label.setText("连接失败")
+        if self.terminal_output_edit:
+            self.terminal_output_edit.appendPlainText("\n[错误] {}".format(error))
+        self._append_log("SSH 终端错误: " + str(error))
+
+    def _terminal_disconnected(self):
+        if self.terminal_status_label and self.terminal_status_label.text().startswith("已连接"):
+            self.terminal_status_label.setText("已断开")
 
     def refresh_device_health(self):
         if self.worker and self.worker.isRunning():
@@ -1231,7 +1699,7 @@ class JetsonControlPanel(QMainWindow):
         self._save_settings()
 
     def _health_interval_ms(self):
-        text = self.health_interval_combo.currentText() if self.health_interval_combo else "5 秒"
+        text = self.health_interval_combo.currentText() if self.health_interval_combo is not None else "5 秒"
         try:
             seconds = int(str(text).split()[0])
         except (TypeError, ValueError, IndexError):
@@ -1242,6 +1710,854 @@ class JetsonControlPanel(QMainWindow):
         for key, label in self.health_labels.items():
             label.setText(data.get(key) or "未知")
 
+    def _refresh_widget_style(self, widget):
+        if not widget:
+            return
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+
+    def _set_environment_card_state(self, widget, state):
+        if not widget:
+            return
+        widget.setProperty("state", state)
+        self._refresh_widget_style(widget)
+
+    def _set_environment_summary_card(self, title, state, value, detail):
+        widgets = self.environment_summary_label.get(title) if self.environment_summary_label else None
+        if not widgets:
+            return
+        widgets["value"].setText(value)
+        widgets["detail"].setText(detail)
+        self._set_environment_card_state(widgets.get("card"), state)
+
+    def _set_environment_result_card(self, title, state, status_text, detail, tooltip=""):
+        widgets = self.environment_result_labels.get(title) if self.environment_result_labels else None
+        if not widgets:
+            return
+        widgets["status"].setText(status_text)
+        widgets["detail"].setText(detail)
+        widgets["detail"].setToolTip(tooltip or detail)
+        self._set_environment_card_state(widgets.get("card"), state)
+        self._set_environment_card_state(widgets.get("status"), state)
+
+    def _combined_environment_status(self, statuses):
+        if not statuses:
+            return "unknown"
+        if "error" in statuses:
+            return "error"
+        if "warning" in statuses:
+            return "warning"
+        if "ok" in statuses:
+            return "ok"
+        return "unknown"
+
+    def _prepare_environment_cards(self, message):
+        for title in self.environment_result_labels:
+            self._set_environment_result_card(title, "pending", "检查中", message)
+        for title in self.environment_summary_label:
+            self._set_environment_summary_card(title, "pending", "检查中", message)
+
+    def _update_environment_page(self, data):
+        items = data.get("items", [])
+        by_title = {item.get("title"): item for item in items}
+        status_text = remote_ops_service.ENVIRONMENT_STATUS_TEXT
+
+        for item in items:
+            title = item.get("title", "")
+            self._set_environment_result_card(
+                title,
+                item.get("status", "unknown"),
+                item.get("status_text", status_text.get(item.get("status"), "未检测")),
+                item.get("summary", "无输出"),
+                item.get("details", ""),
+            )
+
+        summary = data.get("summary", {})
+        overview_state = "ok"
+        if summary.get("error"):
+            overview_state = "error"
+        elif summary.get("warning"):
+            overview_state = "warning"
+        elif summary.get("ok"):
+            overview_state = "ok"
+        else:
+            overview_state = "unknown"
+        overview_value = "正常 {} / 注意 {} / 异常 {} / 未检测 {}".format(
+            summary.get("ok", 0),
+            summary.get("warning", 0),
+            summary.get("error", 0),
+            summary.get("unknown", 0),
+        )
+        self._set_environment_summary_card(
+            "总览",
+            overview_state,
+            "已完成",
+            "{}\n{}".format(overview_value, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+
+        system_titles = ("OS", "Kernel", "CPU")
+        system_status = self._combined_environment_status([
+            by_title.get(title, {}).get("status", "unknown") for title in system_titles
+        ])
+        self._set_environment_summary_card(
+            "系统",
+            system_status,
+            status_text.get(system_status, "未检测"),
+            "\n".join(by_title.get(title, {}).get("summary", "无输出").splitlines()[0] for title in system_titles),
+        )
+
+        tool_titles = ("Python", "Build tools", "OpenCV Python", "FFmpeg", "Common libraries")
+        tool_status = self._combined_environment_status([
+            by_title.get(title, {}).get("status", "unknown") for title in tool_titles
+        ])
+        self._set_environment_summary_card(
+            "开发工具",
+            tool_status,
+            status_text.get(tool_status, "未检测"),
+            "Python: {}\n构建/库: {}".format(
+                status_text.get(by_title.get("Python", {}).get("status", "unknown"), "未检测"),
+                status_text.get(tool_status, "未检测"),
+            ),
+        )
+
+        accel_titles = ("Jetson", "RK3588 / Rockchip")
+        accel_status = self._combined_environment_status([
+            by_title.get(title, {}).get("status", "unknown") for title in accel_titles
+        ])
+        accel_detail = []
+        for title in accel_titles:
+            item = by_title.get(title, {})
+            accel_detail.append("{}: {}".format(title, status_text.get(item.get("status", "unknown"), "未检测")))
+        self._set_environment_summary_card(
+            "加速能力",
+            accel_status,
+            status_text.get(accel_status, "未检测"),
+            "\n".join(accel_detail),
+        )
+
+    def _update_environment_init_page(self):
+        if not self.environment_init_text:
+            return
+        summary = remote_ops_service.parse_device_init_advice_output(self.current_command_output)
+        self.environment_init_text.setPlainText(summary)
+
+    def _set_check_card(self, registry, title, state, status_text, detail, tooltip=""):
+        widgets = registry.get(title) if registry else None
+        if not widgets:
+            return
+        widgets["status"].setText(status_text)
+        widgets["detail"].setText(detail)
+        widgets["detail"].setToolTip(tooltip or detail)
+        self._set_environment_card_state(widgets.get("card"), state)
+        self._set_environment_card_state(widgets.get("status"), state)
+
+    def _prepare_check_cards(self, registry, message):
+        for title in registry:
+            self._set_check_card(registry, title, "pending", "检查中", message)
+
+    def _mark_check_cards_failed(self, registry, message):
+        for title in registry:
+            self._set_check_card(registry, title, "error", "失败", message)
+
+    def _update_network_page(self, data):
+        status_text = remote_ops_service.CHECK_STATUS_TEXT
+        for group in data.get("groups", []):
+            self._set_check_card(
+                self.network_result_labels,
+                group.get("title", ""),
+                group.get("status", "unknown"),
+                status_text.get(group.get("status", "unknown"), "未检测"),
+                group.get("summary", "无输出"),
+            )
+        if self.network_checks_text:
+            checks = data.get("checks", [])
+            if checks:
+                lines = [
+                    "[{}] {}".format(status_text.get(item.get("status"), item.get("status")), item.get("name", ""))
+                    for item in checks
+                ]
+                self.network_checks_text.setPlainText("\n".join(lines))
+            else:
+                self.network_checks_text.setPlainText("未解析到逐项检查结果，完整输出见底部日志。")
+
+    def _update_peripheral_page(self, data):
+        for item in data.get("items", []):
+            self._set_check_card(
+                self.peripheral_result_labels,
+                item.get("title", ""),
+                item.get("status", "unknown"),
+                item.get("status_text", "未检测"),
+                item.get("summary", "无输出"),
+                item.get("details", ""),
+            )
+
+    def _update_process_table(self, rows):
+        if self.process_summary_label:
+            self.process_summary_label.setText("共解析到 {} 个进程。".format(len(rows)))
+        if self.process_table is None:
+            return
+        self.process_table.setRowCount(0)
+        for row_index, row in enumerate(rows[:120]):
+            self.process_table.insertRow(row_index)
+            values = [row.get("pid", ""), row.get("cpu", ""), row.get("mem", ""), row.get("elapsed", ""), row.get("command", "")]
+            for column, value in enumerate(values):
+                self.process_table.setItem(row_index, column, QTableWidgetItem(value))
+        self.process_table.resizeColumnsToContents()
+        self.process_table.horizontalHeader().setStretchLastSection(True)
+
+    def _update_files_table(self, data):
+        rows = data.get("rows", [])
+        path = data.get("path") or self.remote_file_path_edit.text().strip()
+        if self.files_summary_label:
+            self.files_summary_label.setText("{}: {} 项".format(path or "远端路径", len(rows)))
+        if self.files_table is None:
+            return
+        self.files_table.setRowCount(0)
+        for row_index, row in enumerate(rows[:300]):
+            self.files_table.insertRow(row_index)
+            values = [row.get("mode", ""), row.get("size", ""), row.get("modified", ""), row.get("name", "")]
+            for column, value in enumerate(values):
+                self.files_table.setItem(row_index, column, QTableWidgetItem(value))
+        self.files_table.resizeColumnsToContents()
+        self.files_table.horizontalHeader().setStretchLastSection(True)
+
+    def _format_file_size(self, size, is_dir=False):
+        if is_dir:
+            return "<DIR>"
+        try:
+            size = int(size)
+        except (TypeError, ValueError):
+            return ""
+        units = ["B", "KB", "MB", "GB", "TB"]
+        value = float(size)
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                if unit == "B":
+                    return "{} {}".format(int(value), unit)
+                return "{:.1f} {}".format(value, unit)
+            value /= 1024
+        return str(size)
+
+    def _format_mtime(self, mtime):
+        try:
+            if not int(mtime):
+                return ""
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(int(mtime)))
+        except (TypeError, ValueError, OSError):
+            return ""
+
+    def _set_file_table_rows(self, table, rows):
+        if table is None:
+            return
+        table.setRowCount(0)
+        for row_index, row in enumerate(rows):
+            table.insertRow(row_index)
+            name_item = QTableWidgetItem(row.get("name", ""))
+            name_item.setData(Qt.UserRole, row)
+            table.setItem(row_index, 0, name_item)
+            table.setItem(row_index, 1, QTableWidgetItem(self._format_file_size(row.get("size", 0), row.get("is_dir", False))))
+            table.setItem(row_index, 2, QTableWidgetItem(self._format_mtime(row.get("mtime", 0))))
+            table.setItem(row_index, 3, QTableWidgetItem(row.get("permission", "")))
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(False)
+        self._update_file_count_label(table)
+
+    def _selected_file_rows(self, table):
+        rows = []
+        if table is None:
+            return rows
+        seen = set()
+        for item in table.selectedItems():
+            row_index = item.row()
+            if row_index in seen:
+                continue
+            seen.add(row_index)
+            name_item = table.item(row_index, 0)
+            if name_item:
+                rows.append(name_item.data(Qt.UserRole) or {})
+        return rows
+
+    def _file_table_rows(self, table):
+        rows = []
+        if table is None:
+            return rows
+        for row_index in range(table.rowCount()):
+            item = table.item(row_index, 0)
+            if item is not None:
+                rows.append(item.data(Qt.UserRole) or {})
+        return rows
+
+    def _file_count_label_for_table(self, table):
+        if table is self.local_files_table:
+            return self.local_file_count_label
+        if table is self.remote_files_table:
+            return self.remote_file_count_label
+        return None
+
+    def _update_file_count_label(self, table):
+        label = self._file_count_label_for_table(table)
+        if label is None:
+            return
+        rows = [row for row in self._file_table_rows(table) if row.get("name") != ".."]
+        selected = [row for row in self._selected_file_rows(table) if row.get("name") != ".."]
+        directory_count = sum(1 for row in rows if row.get("is_dir"))
+        file_count = max(len(rows) - directory_count, 0)
+        text = "共 {} 项 | 目录 {} | 文件 {}".format(len(rows), directory_count, file_count)
+        if selected:
+            text += " | 已选 {}".format(len(selected))
+        label.setText(text)
+        label.setProperty("selected", bool(selected))
+        self._refresh_widget_style(label)
+
+    def _dir_tree_label(self, path):
+        text = str(path or "")
+        if not text:
+            return "/"
+        if "\\" in text:
+            item_path = Path(text)
+            return item_path.name or str(item_path)
+        cleaned = text.rstrip("/")
+        return cleaned.rsplit("/", 1)[-1] or "/"
+
+    def _dir_tree_item(self, path, loaded=False, maybe_has_children=False):
+        item = QTreeWidgetItem([self._dir_tree_label(path)])
+        item.setData(0, Qt.UserRole, str(path))
+        item.setData(0, Qt.UserRole + 1, bool(loaded))
+        if maybe_has_children and not loaded:
+            item.addChild(QTreeWidgetItem(["加载中..."]))
+        return item
+
+    def _local_child_dirs(self, path):
+        try:
+            children = [child for child in Path(path).iterdir() if child.is_dir()]
+        except OSError:
+            return []
+        return sorted(children, key=lambda child: child.name.lower())
+
+    def _local_has_child_dirs(self, path):
+        try:
+            return any(child.is_dir() for child in Path(path).iterdir())
+        except OSError:
+            return False
+
+    def _refresh_local_dir_tree(self, current_path, rows):
+        if self.local_dir_tree is None:
+            return
+        self.local_dir_tree.blockSignals(True)
+        self.local_dir_tree.clear()
+        root = self._dir_tree_item(str(current_path), loaded=True)
+        for row in rows:
+            if row.get("name") == ".." or not row.get("is_dir"):
+                continue
+            child_path = row.get("path", "")
+            root.addChild(self._dir_tree_item(
+                child_path,
+                loaded=False,
+                maybe_has_children=self._local_has_child_dirs(child_path),
+            ))
+        self.local_dir_tree.addTopLevelItem(root)
+        root.setExpanded(True)
+        self.local_dir_tree.setCurrentItem(root)
+        self.local_dir_tree.blockSignals(False)
+
+    def _refresh_remote_dir_tree(self, current_path, rows):
+        if self.remote_dir_tree is None:
+            return
+        self.remote_tree_nodes_by_path = {}
+        self.remote_dir_tree.blockSignals(True)
+        self.remote_dir_tree.clear()
+        root = self._dir_tree_item(current_path, loaded=True)
+        self.remote_tree_nodes_by_path[str(current_path)] = root
+        for row in rows:
+            if row.get("name") == ".." or not row.get("is_dir"):
+                continue
+            child_path = row.get("path", "")
+            child = self._dir_tree_item(child_path, loaded=False, maybe_has_children=True)
+            root.addChild(child)
+            self.remote_tree_nodes_by_path[str(child_path)] = child
+        self.remote_dir_tree.addTopLevelItem(root)
+        root.setExpanded(True)
+        self.remote_dir_tree.setCurrentItem(root)
+        self.remote_dir_tree.blockSignals(False)
+
+    def local_dir_tree_expanded(self, item):
+        if item is None or item.data(0, Qt.UserRole + 1):
+            return
+        path = item.data(0, Qt.UserRole)
+        item.takeChildren()
+        for child in self._local_child_dirs(path):
+            item.addChild(self._dir_tree_item(
+                str(child),
+                loaded=False,
+                maybe_has_children=self._local_has_child_dirs(child),
+            ))
+        item.setData(0, Qt.UserRole + 1, True)
+
+    def remote_dir_tree_expanded(self, item):
+        if item is None or item.data(0, Qt.UserRole + 1):
+            return
+        path = item.data(0, Qt.UserRole)
+        if self.sftp_worker and self.sftp_worker.isRunning():
+            if self.files_summary_label:
+                self.files_summary_label.setText("SFTP 正在执行，稍后再展开远端目录。")
+            return
+        self.remote_tree_nodes_by_path[str(path)] = item
+        self._start_sftp_worker("list_dirs", {"remote_path": path})
+
+    def local_dir_tree_activated(self, item, _column):
+        if item is None:
+            return
+        path = item.data(0, Qt.UserRole)
+        if path:
+            self.local_file_path_edit.setText(str(path))
+            self.refresh_local_files()
+
+    def remote_dir_tree_activated(self, item, _column):
+        if item is None:
+            return
+        path = item.data(0, Qt.UserRole)
+        if path:
+            self.remote_file_path_edit.setText(str(path))
+            self.refresh_remote_files()
+
+    def _select_context_file_row(self, table, pos):
+        if table is None:
+            return []
+        item = table.itemAt(pos)
+        if item is not None:
+            selected_rows = {selected.row() for selected in table.selectedItems()}
+            if item.row() not in selected_rows:
+                table.clearSelection()
+                table.selectRow(item.row())
+        return self._selected_file_rows(table)
+
+    def _copy_to_clipboard(self, text, label):
+        QApplication.clipboard().setText(text)
+        if self.files_summary_label:
+            self.files_summary_label.setText("已复制{}。".format(label))
+        self._append_log("已复制{}: {}".format(label, text.replace("\n", " | ")))
+
+    def copy_remote_selected_paths(self):
+        rows = self._selected_file_rows(self.remote_files_table)
+        paths = [row.get("path", "") for row in rows if row.get("path")]
+        if not paths and self.remote_file_path_edit is not None:
+            paths = [self.remote_file_path_edit.text().strip()]
+        paths = [path for path in paths if path]
+        if paths:
+            self._copy_to_clipboard("\n".join(paths), "远端路径")
+
+    def copy_local_selected_paths(self):
+        rows = self._selected_file_rows(self.local_files_table)
+        paths = [row.get("path", "") for row in rows if row.get("path")]
+        if not paths and self.local_file_path_edit is not None:
+            paths = [self.local_file_path_edit.text().strip()]
+        paths = [path for path in paths if path]
+        if paths:
+            self._copy_to_clipboard("\n".join(paths), "本地路径")
+
+    def _remote_cd_target_from_selection(self):
+        rows = [row for row in self._selected_file_rows(self.remote_files_table) if row.get("path")]
+        if len(rows) == 1:
+            row = rows[0]
+            path = row.get("path", "")
+            if row.get("name") == ".." or row.get("is_dir"):
+                return path
+            return paramiko_service.parent_remote_path(path)
+        return self.remote_file_path_edit.text().strip() if self.remote_file_path_edit is not None else ""
+
+    def terminal_cd_remote_path(self, remote_path=None):
+        path = str(remote_path or self._remote_cd_target_from_selection() or "").strip()
+        if not path:
+            QMessageBox.warning(self, "缺少远端路径", "没有可进入的远端目录。")
+            return
+        if not self.terminal_worker or not self.terminal_worker.isRunning():
+            QMessageBox.warning(self, "终端未连接", "请先连接 SSH 终端。")
+            return
+        self.terminal_worker.send_text("cd {}\n".format(shlex.quote(path)))
+        if self.files_summary_label:
+            self.files_summary_label.setText("已发送终端切换目录: {}".format(path))
+
+    def open_local_selected_path(self):
+        rows = [row for row in self._selected_file_rows(self.local_files_table) if row.get("path")]
+        raw_path = rows[0].get("path") if rows else (self.local_file_path_edit.text().strip() if self.local_file_path_edit else "")
+        if not raw_path:
+            return
+        path = Path(raw_path)
+        open_path = path if path.is_dir() else path.parent
+        if not open_path.exists():
+            QMessageBox.warning(self, "本地路径不存在", str(open_path))
+            return
+        try:
+            if os.name == "nt":
+                os.startfile(str(open_path))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(open_path)])
+            else:
+                subprocess.Popen(["xdg-open", str(open_path)])
+        except Exception as exc:
+            QMessageBox.warning(self, "无法打开本地路径", str(exc))
+
+    def local_file_selection_changed(self):
+        if self.sftp_worker and self.sftp_worker.isRunning():
+            return
+        self._update_file_count_label(self.local_files_table)
+        rows = [row for row in self._selected_file_rows(self.local_files_table) if row.get("name") != ".."]
+        if rows and self.files_summary_label:
+            self.files_summary_label.setText("本地已选 {} 项".format(len(rows)))
+
+    def remote_file_selection_changed(self):
+        if self.sftp_worker and self.sftp_worker.isRunning():
+            return
+        self._update_file_count_label(self.remote_files_table)
+        rows = [row for row in self._selected_file_rows(self.remote_files_table) if row.get("name") != ".."]
+        if rows and self.files_summary_label:
+            self.files_summary_label.setText("远端已选 {} 项".format(len(rows)))
+
+    def local_files_context_menu(self, pos):
+        rows = [row for row in self._select_context_file_row(self.local_files_table, pos) if row.get("name") != ".."]
+        menu = QMenu(self)
+        upload_action = menu.addAction("上传选中")
+        delete_action = menu.addAction("删除本地")
+        menu.addSeparator()
+        copy_action = menu.addAction("复制本地路径")
+        open_action = menu.addAction("在资源管理器中打开")
+        refresh_action = menu.addAction("刷新")
+        if not rows:
+            upload_action.setEnabled(False)
+            delete_action.setEnabled(False)
+        action = menu.exec_(self.local_files_table.viewport().mapToGlobal(pos))
+        if action == upload_action:
+            self.sftp_upload_selected()
+        elif action == delete_action:
+            self.delete_local_selected()
+        elif action == copy_action:
+            self.copy_local_selected_paths()
+        elif action == open_action:
+            self.open_local_selected_path()
+        elif action == refresh_action:
+            self.refresh_local_files()
+
+    def remote_files_context_menu(self, pos):
+        rows = [row for row in self._select_context_file_row(self.remote_files_table, pos) if row.get("name") != ".."]
+        menu = QMenu(self)
+        download_action = menu.addAction("下载选中")
+        cd_action = menu.addAction("终端进入此目录")
+        mkdir_action = menu.addAction("新建远端目录")
+        delete_action = menu.addAction("删除远端")
+        menu.addSeparator()
+        copy_action = menu.addAction("复制远端路径")
+        refresh_action = menu.addAction("刷新")
+        if not rows:
+            download_action.setEnabled(False)
+            delete_action.setEnabled(False)
+        action = menu.exec_(self.remote_files_table.viewport().mapToGlobal(pos))
+        if action == download_action:
+            self.sftp_download_selected()
+        elif action == cd_action:
+            self.terminal_cd_remote_path()
+        elif action == mkdir_action:
+            self.sftp_mkdir_remote()
+        elif action == delete_action:
+            self.sftp_delete_remote()
+        elif action == copy_action:
+            self.copy_remote_selected_paths()
+        elif action == refresh_action:
+            self.refresh_remote_files()
+
+    def refresh_local_files(self, warn=True):
+        path = Path(self.local_file_path_edit.text().strip() or str(self.paths.app_dir))
+        if not path.exists():
+            if warn:
+                QMessageBox.warning(self, "本地路径不存在", str(path))
+            elif self.files_summary_label:
+                self.files_summary_label.setText("本地路径不存在: {}".format(path))
+            return
+        if path.is_file():
+            path = path.parent
+        self.local_file_path_edit.setText(str(path))
+        rows = []
+        parent = path.parent if path.parent != path else path
+        rows.append({"name": "..", "path": str(parent), "is_dir": True, "size": 0, "mtime": 0, "permission": "<UP>"})
+        for child in sorted(path.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+            try:
+                rows.append(paramiko_service.local_item(child))
+            except OSError:
+                pass
+        self._set_file_table_rows(self.local_files_table, rows)
+        self._refresh_local_dir_tree(path, rows)
+        if self.files_summary_label:
+            self.files_summary_label.setText("本地 {}: {} 项".format(path, max(len(rows) - 1, 0)))
+
+    def refresh_remote_files(self, password=None):
+        remote = self._remote_or_warn()
+        if not remote:
+            return
+        remote_path = self.remote_file_path_edit.text().strip() or "."
+        self._start_sftp_worker("list", {"remote_path": remote_path}, password=password)
+
+    def browse_local_file_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "选择本地目录", self.local_file_path_edit.text())
+        if path:
+            self.local_file_path_edit.setText(path)
+            self.refresh_local_files()
+
+    def local_files_up(self):
+        path = Path(self.local_file_path_edit.text().strip() or ".")
+        self.local_file_path_edit.setText(str(path.parent if path.parent != path else path))
+        self.refresh_local_files()
+
+    def remote_files_up(self):
+        self.remote_file_path_edit.setText(paramiko_service.parent_remote_path(self.remote_file_path_edit.text()))
+        self.refresh_remote_files()
+
+    def local_file_item_activated(self, item):
+        row = self.local_files_table.item(item.row(), 0)
+        data = row.data(Qt.UserRole) if row else {}
+        if data.get("is_dir"):
+            self.local_file_path_edit.setText(data.get("path", self.local_file_path_edit.text()))
+            self.refresh_local_files()
+
+    def remote_file_item_activated(self, item):
+        row = self.remote_files_table.item(item.row(), 0)
+        data = row.data(Qt.UserRole) if row else {}
+        if data.get("is_dir"):
+            self.remote_file_path_edit.setText(data.get("path", self.remote_file_path_edit.text()))
+            self.refresh_remote_files()
+
+    def _start_sftp_worker(self, action, payload, password=None):
+        if self.sftp_worker and self.sftp_worker.isRunning():
+            QMessageBox.warning(self, "SFTP 正在运行", "请等待当前 SFTP 操作结束，或先取消传输。")
+            return
+        remote = self._remote_or_warn()
+        if not remote:
+            return
+        self.pending_sftp_refresh = None
+        self.sftp_worker = SftpWorker(remote, action, payload, password=password if password is not None else self.sftp_password, parent=self)
+        self.sftp_worker.listed.connect(self._sftp_listed)
+        self.sftp_worker.tree_listed.connect(self._sftp_tree_listed)
+        self.sftp_worker.progress.connect(self._sftp_progress)
+        self.sftp_worker.file_progress.connect(self._sftp_file_progress)
+        self.sftp_worker.message.connect(self._sftp_message)
+        self.sftp_worker.finished_ok.connect(self._sftp_finished_ok)
+        self.sftp_worker.auth_failed.connect(self._sftp_auth_failed)
+        self.sftp_worker.failed.connect(self._sftp_failed)
+        self.sftp_worker.finished.connect(self._sftp_worker_finished)
+        self.sftp_worker.start()
+        if self.files_summary_label:
+            self.files_summary_label.setText("SFTP {} 正在执行...".format(action))
+        if self.transfer_progress_bar:
+            self.transfer_progress_bar.setValue(0)
+
+    def _sftp_listed(self, path, rows):
+        self.remote_file_path_edit.setText(path)
+        self._set_file_table_rows(self.remote_files_table, rows)
+        self._refresh_remote_dir_tree(path, rows)
+        if self.files_summary_label:
+            self.files_summary_label.setText("远端 {}: {} 项".format(path, max(len(rows) - 1, 0)))
+
+    def _sftp_tree_listed(self, path, rows):
+        item = self.remote_tree_nodes_by_path.get(str(path))
+        if item is None:
+            return
+        item.takeChildren()
+        for row in rows:
+            child_path = row.get("path", "")
+            child = self._dir_tree_item(child_path, loaded=False, maybe_has_children=True)
+            item.addChild(child)
+            self.remote_tree_nodes_by_path[str(child_path)] = child
+        item.setData(0, Qt.UserRole + 1, True)
+        item.setExpanded(True)
+
+    def _sftp_progress(self, message, index, total):
+        if self.files_summary_label:
+            self.files_summary_label.setText("{} ({}/{})".format(message, index, total))
+        if self.transfer_progress_bar:
+            self.transfer_progress_bar.setValue(int(index * 100 / max(total, 1)))
+
+    def _sftp_file_progress(self, message, index, total, done, file_size):
+        file_percent = int(done * 100 / file_size) if file_size else 0
+        overall = int(((index - 1) + (done / file_size if file_size else 0)) * 100 / max(total, 1))
+        if self.files_summary_label:
+            self.files_summary_label.setText(
+                "{} ({}/{}, {}%)".format(message, index, total, file_percent)
+            )
+        if self.transfer_progress_bar:
+            self.transfer_progress_bar.setValue(max(0, min(100, overall)))
+
+    def _sftp_message(self, message):
+        self._append_log("SFTP: " + str(message))
+
+    def _sftp_finished_ok(self, message):
+        if self.files_summary_label:
+            self.files_summary_label.setText(message)
+        if self.transfer_progress_bar and "完成" in message:
+            self.transfer_progress_bar.setValue(100)
+        action = self.sftp_worker.action if self.sftp_worker else ""
+        if action in ("upload", "mkdir", "delete_remote"):
+            self.pending_sftp_refresh = "remote"
+        elif action == "download":
+            self.pending_sftp_refresh = "local"
+        self._append_log("SFTP: " + message)
+
+    def _sftp_auth_failed(self, error, retry):
+        password = self._prompt_ssh_password("SFTP 认证")
+        if password is None:
+            self._sftp_failed("SFTP 认证失败: " + str(error))
+            return
+        self.sftp_password = password
+        self.pending_sftp_retry = (retry, password)
+
+    def _sftp_failed(self, error):
+        if self.files_summary_label:
+            self.files_summary_label.setText("SFTP 失败: " + str(error))
+        self.pending_sftp_refresh = None
+        self.pending_sftp_retry = None
+        self._append_log("SFTP 失败: " + str(error))
+
+    def _sftp_worker_finished(self):
+        sender = self.sender()
+        if sender is self.sftp_worker:
+            self.sftp_worker = None
+        if self.pending_sftp_retry:
+            retry, password = self.pending_sftp_retry
+            self.pending_sftp_retry = None
+            self._start_sftp_worker(retry.get("action"), retry.get("payload"), password=password)
+            return
+        refresh_target = self.pending_sftp_refresh
+        self.pending_sftp_refresh = None
+        if refresh_target == "remote":
+            QTimer.singleShot(100, self.refresh_remote_files)
+        elif refresh_target == "local":
+            QTimer.singleShot(0, self.refresh_local_files)
+
+    def sftp_upload_selected(self):
+        rows = [row for row in self._selected_file_rows(self.local_files_table) if row.get("name") != ".."]
+        if not rows:
+            QMessageBox.warning(self, "未选择本地文件", "请在左侧选择要上传的文件或目录。")
+            return
+        local_paths = [row.get("path") for row in rows if row.get("path")]
+        self._start_sftp_worker("upload", {
+            "local_paths": local_paths,
+            "remote_dir": self.remote_file_path_edit.text().strip() or ".",
+        })
+
+    def sftp_download_selected(self):
+        rows = [row for row in self._selected_file_rows(self.remote_files_table) if row.get("name") != ".."]
+        if not rows:
+            QMessageBox.warning(self, "未选择远端文件", "请在右侧选择要下载的文件或目录。")
+            return
+        remote_paths = [row.get("path") for row in rows if row.get("path")]
+        self._start_sftp_worker("download", {
+            "remote_paths": remote_paths,
+            "local_dir": self.local_file_path_edit.text().strip() or str(self.paths.app_dir),
+        })
+
+    def sftp_mkdir_remote(self):
+        name, ok = QInputDialog.getText(self, "新建远端目录", "目录名")
+        if not ok or not name.strip():
+            return
+        directory_name = name.strip()
+        if directory_name in (".", "..") or "/" in directory_name or "\\" in directory_name or ".." in directory_name:
+            QMessageBox.warning(self, "目录名不安全", "请输入单级目录名，不能包含路径分隔符或 '..'。")
+            return
+        remote_path = paramiko_service.join_remote_path(self.remote_file_path_edit.text().strip() or ".", directory_name)
+        reason = remote_ops_service.remote_path_refusal_reason(remote_path)
+        if reason:
+            QMessageBox.warning(self, "远端路径不安全", reason)
+            return
+        self._start_sftp_worker("mkdir", {"remote_path": remote_path})
+
+    def sftp_delete_remote(self):
+        rows = [row for row in self._selected_file_rows(self.remote_files_table) if row.get("name") != ".."]
+        if not rows:
+            QMessageBox.warning(self, "未选择远端路径", "请在右侧选择要删除的路径。")
+            return
+        remote_paths = [row.get("path") for row in rows if row.get("path")]
+        for remote_path in remote_paths:
+            reason = remote_ops_service.remote_path_refusal_reason(remote_path, destructive=True)
+            if reason:
+                QMessageBox.warning(self, "远端路径不安全", "{}\n{}".format(remote_path, reason))
+                return
+        answer = QMessageBox.question(self, "确认删除远端路径", "确定删除选中的 {} 个远端路径？".format(len(remote_paths)), QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        self._start_sftp_worker("delete_remote", {"remote_paths": remote_paths})
+
+    def delete_local_selected(self):
+        rows = [row for row in self._selected_file_rows(self.local_files_table) if row.get("name") != ".."]
+        if not rows:
+            QMessageBox.warning(self, "未选择本地路径", "请在左侧选择要删除的路径。")
+            return
+        answer = QMessageBox.question(self, "确认删除本地路径", "确定删除选中的 {} 个本地路径？".format(len(rows)), QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        errors = []
+        for row in rows:
+            path = Path(row.get("path", ""))
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                elif path.exists():
+                    path.unlink()
+            except OSError as exc:
+                errors.append("{}: {}".format(path, exc))
+        self.refresh_local_files()
+        if errors:
+            QMessageBox.warning(self, "部分本地路径删除失败", "\n".join(errors[:5]))
+            self._append_log("本地删除失败: " + " | ".join(errors[:5]))
+
+    def sftp_cancel_transfer(self):
+        if self.sftp_worker and self.sftp_worker.isRunning():
+            self.sftp_worker.cancel()
+            if self.files_summary_label:
+                self.files_summary_label.setText("正在取消传输...")
+
+    def _update_service_status_page(self, data):
+        status = data.get("status", "unknown")
+        status_text = data.get("status_text", "未检测")
+        self._set_check_card(
+            self.service_result_labels,
+            "状态",
+            status,
+            status_text,
+            data.get("active", "Active: 未检测"),
+            data.get("details", ""),
+        )
+
+        loaded = data.get("loaded", "Loaded: 未检测")
+        loaded_state = "ok" if "loaded" in loaded.lower() and "not-found" not in loaded.lower() else "unknown"
+        self._set_check_card(
+            self.service_result_labels,
+            "加载",
+            loaded_state,
+            remote_ops_service.CHECK_STATUS_TEXT.get(loaded_state, "未检测"),
+            loaded,
+            data.get("details", ""),
+        )
+
+        pid = data.get("pid", "Main PID: 未检测")
+        pid_state = "ok" if "未检测" not in pid and "n/a" not in pid.lower() else "unknown"
+        self._set_check_card(
+            self.service_result_labels,
+            "进程",
+            pid_state,
+            remote_ops_service.CHECK_STATUS_TEXT.get(pid_state, "未检测"),
+            pid,
+            data.get("details", ""),
+        )
+        if self.service_status_text:
+            detail = "\n".join([
+                data.get("summary", ""),
+                data.get("loaded", ""),
+                data.get("active", ""),
+                data.get("pid", ""),
+            ]).strip()
+            self.service_status_text.setPlainText(detail or data.get("details", ""))
+
+    def _note_service_operation_complete(self, title):
+        if self.service_status_text:
+            self.service_status_text.setPlainText("{} 已完成。\n建议点击“状态”刷新当前服务状态。".format(title))
+
     def _current_project(self):
         return self._active_context()["project"]
 
@@ -1249,7 +2565,7 @@ class JetsonControlPanel(QMainWindow):
         return self._active_context()["device"]
 
     def _remote_command_for_project(self, title, remote_command):
-        remote = self._current_device().get("ssh") or self.remote_edit.text().strip()
+        remote = self._normalize_remote_text(self.remote_edit.text()) or self._current_device().get("ssh")
         return (
             title,
             ssh_service.remote_ssh_command(remote, remote_command),
@@ -1258,10 +2574,9 @@ class JetsonControlPanel(QMainWindow):
 
     def _project_sync_step(self):
         project = self._current_project()
-        device = self._current_device()
         command = ssh_service.sync_command(
             self.paths.sync_script,
-            device.get("ssh", self.remote_edit.text().strip()),
+            self._normalize_remote_text(self.remote_edit.text()),
             project.get("remote_root", self.remote_path_edit.text().strip()),
             full=self.full_sync_check.isChecked(),
             dry_run=self.dry_run_check.isChecked(),
@@ -1381,9 +2696,15 @@ class JetsonControlPanel(QMainWindow):
         self._run_jetson_command("运行远程程序", remote_script)
 
     def list_remote_processes(self):
-        self._run_jetson_command(
+        remote = self._remote_or_warn()
+        if not remote:
+            return
+        if self.process_summary_label:
+            self.process_summary_label.setText("正在刷新远端进程...")
+        self._run_command(
             "刷新远程进程",
-            remote_ops_service.process_list_command(self.process_filter_edit.text()),
+            ssh_service.remote_ssh_command(remote, remote_ops_service.process_list_command(self.process_filter_edit.text())),
+            cwd=self.paths.app_dir,
         )
 
     def kill_remote_pid(self):
@@ -1428,40 +2749,72 @@ class JetsonControlPanel(QMainWindow):
         )
 
     def run_network_diagnostics(self):
-        self._run_jetson_command(
+        remote = self._remote_or_warn()
+        if not remote:
+            return
+        self._prepare_check_cards(self.network_result_labels, "正在诊断远端网络")
+        if self.network_checks_text:
+            self.network_checks_text.setPlainText("正在执行网络诊断...")
+        self._run_command(
             "网络连通性诊断",
-            remote_ops_service.network_diagnostics_command(
+            ssh_service.remote_ssh_command(remote, remote_ops_service.network_diagnostics_command(
                 self.network_windows_ip_edit.text(),
                 self.network_proxy_port_edit.text(),
-            ),
+            )),
+            cwd=self.paths.app_dir,
         )
 
     def run_environment_check(self):
-        self._run_jetson_command("开发环境检查", remote_ops_service.environment_check_command())
+        remote = self._remote_or_warn()
+        if not remote:
+            return
+        self._prepare_environment_cards("正在检查远端开发环境")
+        self._run_command(
+            "开发环境检查",
+            ssh_service.remote_ssh_command(remote, remote_ops_service.environment_check_command()),
+            cwd=self.paths.app_dir,
+        )
 
     def run_device_init_advice(self):
-        self._run_jetson_command(
+        remote = self._remote_or_warn()
+        if not remote:
+            return
+        if self.environment_init_text:
+            self.environment_init_text.setPlainText("正在检查远端初始化状态...")
+        self._run_command(
             "设备初始化检查",
-            remote_ops_service.device_init_advice_command(
+            ssh_service.remote_ssh_command(remote, remote_ops_service.device_init_advice_command(
                 self.network_windows_ip_edit.text() if self.network_windows_ip_edit else self.ip_combo.currentText(),
                 self.network_proxy_port_edit.text() if self.network_proxy_port_edit else self.port_spin.value(),
-            ),
+            )),
+            cwd=self.paths.app_dir,
         )
 
     def run_peripheral_check(self):
-        self._run_jetson_command(
+        remote = self._remote_or_warn()
+        if not remote:
+            return
+        self._prepare_check_cards(self.peripheral_result_labels, "正在检测远端外设")
+        self._run_command(
             "外设检测",
-            remote_ops_service.peripheral_check_command(self.video_device_edit.text()),
+            ssh_service.remote_ssh_command(remote, remote_ops_service.peripheral_check_command(self.video_device_edit.text())),
+            cwd=self.paths.app_dir,
         )
 
     def list_remote_files(self):
-        self._run_jetson_command(
+        remote = self._remote_or_warn()
+        if not remote:
+            return
+        if self.files_summary_label:
+            self.files_summary_label.setText("正在列出远端路径...")
+        self._run_command(
             "列出远程文件",
-            remote_ops_service.file_list_command(self.remote_file_path_edit.text()),
+            ssh_service.remote_ssh_command(remote, remote_ops_service.file_list_command(self.remote_file_path_edit.text())),
+            cwd=self.paths.app_dir,
         )
 
     def apply_remote_path_bookmark(self):
-        if not self.remote_path_bookmark_combo or not self.remote_file_path_edit:
+        if self.remote_path_bookmark_combo is None or self.remote_file_path_edit is None:
             return
         path = self.remote_path_bookmark_combo.currentText().strip()
         if path:
@@ -1493,7 +2846,7 @@ class JetsonControlPanel(QMainWindow):
         self._append_log("已保存远端路径收藏: " + remote_path)
 
     def delete_remote_path_bookmark(self):
-        if not self.remote_path_bookmark_combo:
+        if self.remote_path_bookmark_combo is None:
             return
         remote_path = self.remote_path_bookmark_combo.currentText().strip()
         if not remote_path:
@@ -1583,6 +2936,9 @@ class JetsonControlPanel(QMainWindow):
         if not service_name:
             QMessageBox.warning(self, "缺少服务名", "请填写 systemd 服务名。")
             return
+        remote = self._remote_or_warn()
+        if not remote:
+            return
         if confirm:
             answer = QMessageBox.question(
                 self,
@@ -1593,9 +2949,16 @@ class JetsonControlPanel(QMainWindow):
             )
             if answer != QMessageBox.Yes:
                 return
-        self._run_jetson_command(
+        if action == "status":
+            self._prepare_check_cards(self.service_result_labels, "正在查询服务状态")
+            if self.service_status_text:
+                self.service_status_text.setPlainText("正在查询服务状态...")
+        elif action in ("start", "stop", "restart") and self.service_status_text:
+            self.service_status_text.setPlainText("正在执行服务操作: {}".format(action))
+        self._run_command(
             "服务{}: {}".format(action, service_name),
-            remote_ops_service.service_command(service_name, action),
+            ssh_service.remote_ssh_command(remote, remote_ops_service.service_command(service_name, action)),
+            cwd=self.paths.app_dir,
         )
 
     def service_status(self):
@@ -1724,7 +3087,7 @@ class JetsonControlPanel(QMainWindow):
         self._append_log("已删除模型配置。")
 
     def _refresh_device_profile_combo(self):
-        if not self.device_profile_combo:
+        if self.device_profile_combo is None:
             return
         current = self.device_profile_combo.currentText()
         self.device_profile_combo.clear()
@@ -1736,10 +3099,10 @@ class JetsonControlPanel(QMainWindow):
                 self.device_profile_combo.setCurrentIndex(index)
 
     def fill_device_profile_from_current(self):
-        self.device_remote_edit.setText(self.remote_edit.text().strip())
+        self.device_remote_edit.setText(self._normalize_remote_text(self.remote_edit.text()))
         self.device_remote_path_edit.setText(self.remote_path_edit.text().strip())
         self.device_local_root_edit.setText(self.local_root_edit.text().strip())
-        name = self.remote_edit.text().strip().split("@")[-1] or "设备"
+        name = self._normalize_remote_text(self.remote_edit.text()).split("@")[-1] or "设备"
         self.device_name_edit.setText(name)
 
     def save_device_profile(self):
@@ -1875,14 +3238,15 @@ class JetsonControlPanel(QMainWindow):
     def _save_diagnostic_report(self):
         report_dir = Path(self.report_dir_edit.text().strip() or (self.paths.tool_dir / "reports"))
         report_dir.mkdir(parents=True, exist_ok=True)
-        safe_remote = self.remote_edit.text().strip().replace("@", "_").replace(":", "_").replace("/", "_")
+        remote = self._normalize_remote_text(self.remote_edit.text())
+        safe_remote = remote.replace("@", "_").replace(":", "_").replace("/", "_")
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         report_path = report_dir / "diagnostic-{}-{}.md".format(safe_remote or "device", timestamp)
         body = "\n".join(self.current_command_output)
         header = [
             "# Jetson Tool Panel 诊断报告",
             "",
-            "- Remote: {}".format(self.remote_edit.text().strip()),
+            "- Remote: {}".format(remote),
             "- Windows IP: {}".format(self.ip_combo.currentText().strip()),
             "- Proxy Port: {}".format(self.port_spin.value()),
             "- Generated: {}".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
@@ -1903,8 +3267,8 @@ class JetsonControlPanel(QMainWindow):
         self._run_jetson_command("查询 Jetson 显示器", command)
 
     def set_jetson_resolution(self):
-        output = self.display_output_combo.currentText().strip() if self.display_output_combo else "auto"
-        mode = self.resolution_combo.currentText().strip() if self.resolution_combo else "1920x1080"
+        output = self.display_output_combo.currentText().strip() if self.display_output_combo is not None else "auto"
+        mode = self.resolution_combo.currentText().strip() if self.resolution_combo is not None else "1920x1080"
         rate = self.refresh_rate_spin.value() if self.refresh_rate_spin else 0
         framebuffer_fallback = (
             self.framebuffer_fallback_check.isChecked()
@@ -1927,7 +3291,7 @@ class JetsonControlPanel(QMainWindow):
         self._run_jetson_command("设置 Jetson 分辨率", remote_script)
 
     def auto_jetson_display(self):
-        output = self.display_output_combo.currentText().strip() if self.display_output_combo else "auto"
+        output = self.display_output_combo.currentText().strip() if self.display_output_combo is not None else "auto"
         framebuffer_fallback = (
             self.framebuffer_fallback_check.isChecked()
             if self.framebuffer_fallback_check
@@ -1942,9 +3306,8 @@ class JetsonControlPanel(QMainWindow):
         self._run_jetson_command("恢复 Jetson 显示自动模式", remote_script)
 
     def configure_ssh_key(self):
-        remote = self.remote_edit.text().strip()
+        remote = self._remote_or_warn()
         if not remote:
-            QMessageBox.warning(self, "缺少 SSH 地址", "请填写 Jetson SSH，例如 jetson@192.168.55.1。")
             return
 
         self._save_settings()
@@ -1972,9 +3335,8 @@ class JetsonControlPanel(QMainWindow):
         self._append_log("已打开 SSH Key 配置窗口。按提示输入 Jetson 密码，完成后再点击“测试 SSH”。")
 
     def upload_proxy_script(self):
-        remote = self.remote_edit.text().strip()
+        remote = self._remote_or_warn()
         if not remote:
-            QMessageBox.warning(self, "缺少 SSH 地址", "请填写 Jetson SSH，例如 jetson@192.168.55.1。")
             return
         if not self.paths.jetson_proxy_script.exists():
             QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(self.paths.jetson_proxy_script))
@@ -1987,11 +3349,13 @@ class JetsonControlPanel(QMainWindow):
         )
 
     def pull_from_jetson(self):
-        remote = self.remote_edit.text().strip()
+        remote = self._remote_or_warn()
+        if not remote:
+            return
         remote_path = self.remote_path_edit.text().strip()
         local_root = Path(self.local_root_edit.text().strip())
-        if not remote or not remote_path:
-            QMessageBox.warning(self, "缺少参数", "请填写 Jetson SSH 和 Jetson 项目路径。")
+        if not remote_path:
+            QMessageBox.warning(self, "缺少参数", "请填写 Jetson 项目路径。")
             return
         if not local_root.exists():
             QMessageBox.warning(self, "目录不存在", "Windows 保存目录不存在: {}".format(local_root))
@@ -2007,9 +3371,12 @@ class JetsonControlPanel(QMainWindow):
         if not self.paths.sync_script.exists():
             QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(self.paths.sync_script))
             return
+        remote = self._remote_or_warn()
+        if not remote:
+            return
         command = ssh_service.sync_command(
             self.paths.sync_script,
-            self.remote_edit.text().strip(),
+            remote,
             self.remote_path_edit.text().strip(),
             init=True,
         )
@@ -2019,10 +3386,13 @@ class JetsonControlPanel(QMainWindow):
         if not self.paths.sync_script.exists():
             QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(self.paths.sync_script))
             return
+        remote = self._remote_or_warn()
+        if not remote:
+            return
 
         command = ssh_service.sync_command(
             self.paths.sync_script,
-            self.remote_edit.text().strip(),
+            remote,
             self.remote_path_edit.text().strip(),
             full=self.full_sync_check.isChecked(),
             dry_run=self.dry_run_check.isChecked(),
@@ -2044,6 +3414,22 @@ class JetsonControlPanel(QMainWindow):
                 return
             self.worker.terminate_process()
             self.worker.wait(3000)
+        if self.sftp_worker and self.sftp_worker.isRunning():
+            answer = QMessageBox.question(
+                self,
+                "SFTP 仍在运行",
+                "当前文件传输仍在运行，是否取消并退出？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                event.ignore()
+                return
+            self.sftp_worker.cancel()
+            self.sftp_worker.wait(3000)
+        if self.terminal_worker and self.terminal_worker.isRunning():
+            self.terminal_worker.stop()
+            self.terminal_worker.wait(2000)
         self._save_settings()
         event.accept()
 
