@@ -23,6 +23,7 @@ class UiSmokeTest(unittest.TestCase):
             self.assertIsNotNone(window.transfer_progress_bar)
             self.assertEqual(window.local_files_table.contextMenuPolicy(), Qt.CustomContextMenu)
             self.assertEqual(window.remote_files_table.contextMenuPolicy(), Qt.CustomContextMenu)
+            self.assertFalse(window.terminal_output_edit.tabChangesFocus())
             self.assertTrue(hasattr(window, "remote_open_selected_path"))
         finally:
             window.deleteLater()

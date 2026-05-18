@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEvent, Qt
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -62,6 +62,14 @@ class TerminalOutput(QPlainTextEdit):
         super().__init__()
         self.window = window
         self.setFocusPolicy(Qt.StrongFocus)
+        self.setTabChangesFocus(False)
+
+    def event(self, event):
+        if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Tab, Qt.Key_Backtab):
+            self.window.terminal_send_text("\t" if event.key() == Qt.Key_Tab else "\x1b[Z")
+            event.accept()
+            return True
+        return super().event(event)
 
     def keyPressEvent(self, event):
         key = event.key()
