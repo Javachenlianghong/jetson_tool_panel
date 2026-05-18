@@ -163,6 +163,10 @@ def _build_session_bar(window):
     layout.addWidget(_tool_button("Ctrl+C", window.terminal_interrupt))
     layout.addWidget(_tool_button("清屏", window.terminal_clear))
     layout.addSpacing(10)
+    sync_button = _tool_button("同步到 Jetson", window.sync_to_jetson, primary=True)
+    window.command_buttons.append(sync_button)
+    layout.addWidget(sync_button)
+    layout.addSpacing(10)
 
     window.terminal_status_label = QLabel("未连接")
     window.terminal_status_label.setObjectName("MutedText")
