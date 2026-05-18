@@ -1,5 +1,5 @@
-from PyQt5.QtCore import QEvent, Qt
-from PyQt5.QtGui import QFont, QKeySequence
+from PyQt5.QtCore import QEvent, QTimer, Qt
+from PyQt5.QtGui import QColor, QFont, QKeySequence, QPainter
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -61,8 +61,35 @@ class TerminalOutput(QPlainTextEdit):
     def __init__(self, window):
         super().__init__()
         self.window = window
+        self._cursor_visible = True
+        self._cursor_timer = QTimer(self)
+        self._cursor_timer.timeout.connect(self._blink_cursor)
+        self._cursor_timer.start(500)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setTabChangesFocus(False)
+
+    def _blink_cursor(self):
+        self._cursor_visible = not self._cursor_visible
+        self.viewport().update()
+
+    def focusInEvent(self, event):
+        self._cursor_visible = True
+        self.viewport().update()
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event):
+        self._cursor_visible = False
+        self.viewport().update()
+        super().focusOutEvent(event)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._cursor_visible or not self.hasFocus():
+            return
+        cursor_rect = self.cursorRect(self.textCursor())
+        cursor_rect.setWidth(8)
+        painter = QPainter(self.viewport())
+        painter.fillRect(cursor_rect, QColor("#e5e7eb"))
 
     def event(self, event):
         if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Tab, Qt.Key_Backtab):
