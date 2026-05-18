@@ -3,7 +3,9 @@
 """Main window for Jetson Tool Panel."""
 
 import base64
+import hashlib
 import os
+import posixpath
 import shutil
 import socket
 import subprocess
@@ -2027,15 +2029,63 @@ class JetsonControlPanel(QMainWindow):
         if not open_path.exists():
             QMessageBox.warning(self, "本地路径不存在", str(open_path))
             return
+        self._open_local_path(open_path, "无法打开本地路径")
+
+    def _open_local_path(self, path, error_title):
         try:
             if os.name == "nt":
-                os.startfile(str(open_path))
+                os.startfile(str(path))
             elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(open_path)])
+                subprocess.Popen(["open", str(path)])
             else:
-                subprocess.Popen(["xdg-open", str(open_path)])
+                subprocess.Popen(["xdg-open", str(path)])
         except Exception as exc:
-            QMessageBox.warning(self, "无法打开本地路径", str(exc))
+            QMessageBox.warning(self, error_title, str(exc))
+
+    def _remote_preview_local_path(self, remote_path):
+        base_name = posixpath.basename(str(remote_path).rstrip("/")) or "remote-file"
+        safe_name = "".join(
+            char if char.isalnum() or char in "._-" else "_"
+            for char in base_name
+        ).strip("._") or "remote-file"
+        digest = hashlib.sha1(str(remote_path).encode("utf-8")).hexdigest()[:10]
+        return self.paths.config_dir / "remote_preview" / "{}-{}".format(digest, safe_name)
+
+    def preview_remote_selected_file(self, row=None):
+        rows = [row] if row is not None else [
+            item for item in self._selected_file_rows(self.remote_files_table)
+            if item.get("name") != ".."
+        ]
+        if not rows:
+            QMessageBox.warning(self, "未选择远端文件", "请在远端文件列表中选择一个文件。")
+            return
+        if len(rows) != 1:
+            QMessageBox.warning(self, "只能预览一个文件", "本地预览一次只能打开一个远端文件。")
+            return
+        row = rows[0]
+        if row.get("is_dir"):
+            QMessageBox.warning(self, "无法预览目录", "请选择具体文件；目录可以进入或下载。")
+            return
+        remote_path = row.get("path", "")
+        if not remote_path:
+            QMessageBox.warning(self, "缺少远端路径", "无法确定要预览的远端文件路径。")
+            return
+        size = int(row.get("size", 0) or 0)
+        if size > 50 * 1024 * 1024:
+            answer = QMessageBox.question(
+                self,
+                "文件较大",
+                "该文件约 {}，预览需要先下载到本地缓存。是否继续？".format(self._format_file_size(size)),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+        local_path = self._remote_preview_local_path(remote_path)
+        self._start_sftp_worker("preview", {
+            "remote_path": remote_path,
+            "local_path": str(local_path),
+        })
 
     def local_file_selection_changed(self):
         if self.sftp_worker and self.sftp_worker.isRunning():
@@ -2078,6 +2128,7 @@ class JetsonControlPanel(QMainWindow):
     def remote_files_context_menu(self, pos):
         rows = [row for row in self._select_context_file_row(self.remote_files_table, pos) if row.get("name") != ".."]
         menu = QMenu(self)
+        preview_action = menu.addAction("本地预览")
         download_action = menu.addAction("下载选中")
         cd_action = menu.addAction("进入此目录")
         mkdir_action = menu.addAction("新建远端目录")
@@ -2086,10 +2137,15 @@ class JetsonControlPanel(QMainWindow):
         copy_action = menu.addAction("复制远端路径")
         refresh_action = menu.addAction("刷新")
         if not rows:
+            preview_action.setEnabled(False)
             download_action.setEnabled(False)
             delete_action.setEnabled(False)
+        elif len(rows) != 1 or rows[0].get("is_dir"):
+            preview_action.setEnabled(False)
         action = menu.exec_(self.remote_files_table.viewport().mapToGlobal(pos))
-        if action == download_action:
+        if action == preview_action:
+            self.preview_remote_selected_file()
+        elif action == download_action:
             self.sftp_download_selected()
         elif action == cd_action:
             self.remote_open_selected_path()
@@ -2160,6 +2216,8 @@ class JetsonControlPanel(QMainWindow):
         if data.get("is_dir"):
             self.remote_file_path_edit.setText(data.get("path", self.remote_file_path_edit.text()))
             self.refresh_remote_files()
+        else:
+            self.preview_remote_selected_file(data)
 
     def _start_sftp_worker(self, action, payload, password=None):
         if self.sftp_worker and self.sftp_worker.isRunning():
@@ -2180,7 +2238,15 @@ class JetsonControlPanel(QMainWindow):
         self.sftp_worker.finished.connect(self._sftp_worker_finished)
         self.sftp_worker.start()
         if self.files_summary_label:
-            self.files_summary_label.setText("SFTP {} 正在执行...".format(action))
+            action_text = {
+                "list": "刷新远端目录",
+                "upload": "上传",
+                "download": "下载",
+                "preview": "本地预览",
+                "mkdir": "新建远端目录",
+                "delete_remote": "删除远端",
+            }.get(action, action)
+            self.files_summary_label.setText("SFTP {} 正在执行...".format(action_text))
         if self.transfer_progress_bar:
             self.transfer_progress_bar.setValue(0)
 
@@ -2215,10 +2281,18 @@ class JetsonControlPanel(QMainWindow):
         if self.transfer_progress_bar and "完成" in message:
             self.transfer_progress_bar.setValue(100)
         action = self.sftp_worker.action if self.sftp_worker else ""
+        payload = self.sftp_worker.payload if self.sftp_worker else {}
         if action in ("upload", "mkdir", "delete_remote"):
             self.pending_sftp_refresh = "remote"
         elif action == "download":
             self.pending_sftp_refresh = "local"
+        elif action == "preview":
+            if self.transfer_progress_bar:
+                self.transfer_progress_bar.setValue(100)
+            local_raw = payload.get("local_path", "")
+            local_path = Path(local_raw) if local_raw else None
+            if local_path is not None and local_path.exists():
+                self._open_local_path(local_path, "无法预览远端文件")
         self._append_log("SFTP: " + message)
 
     def _sftp_auth_failed(self, error, retry):

@@ -161,6 +161,8 @@ class SftpWorker(QThread):
                 self._upload()
             elif self.action == "download":
                 self._download()
+            elif self.action == "preview":
+                self._preview()
             else:
                 raise ValueError("Unsupported SFTP action: {}".format(self.action))
         except Exception as exc:
@@ -277,6 +279,25 @@ class SftpWorker(QThread):
                 callback=self._progress_callback("下载 {}".format(relative), index, total),
             )
         self.finished_ok.emit("下载完成: {} 项".format(total))
+
+    def _preview(self):
+        remote_path = self.payload.get("remote_path") or ""
+        local_raw = self.payload.get("local_path") or ""
+        if not remote_path or not local_raw:
+            raise ValueError("预览缺少远端路径或本地缓存路径")
+        local_path = Path(local_raw)
+        attr = self._sftp.stat(remote_path)
+        if stat.S_ISDIR(attr.st_mode):
+            raise ValueError("不能预览目录: {}".format(remote_path))
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        name = posixpath.basename(remote_path) or remote_path
+        self.progress.emit("预览下载 {}".format(name), 1, 1)
+        self._sftp.get(
+            remote_path,
+            str(local_path),
+            callback=self._progress_callback("预览下载 {}".format(name), 1, 1),
+        )
+        self.finished_ok.emit("预览文件已缓存: {}".format(local_path))
 
     def _progress_callback(self, message, index, total):
         def callback(done, file_size):

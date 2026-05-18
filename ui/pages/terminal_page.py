@@ -211,6 +211,7 @@ def _build_remote_files_panel(window):
 
     action_row = QHBoxLayout()
     action_row.setSpacing(6)
+    action_row.addWidget(_tool_button("本地预览", window.preview_remote_selected_file, primary=True))
     action_row.addWidget(_tool_button("进入目录", window.remote_open_selected_path))
     action_row.addWidget(_tool_button("新建目录", window.sftp_mkdir_remote))
     action_row.addWidget(_tool_button("删除远端", window.sftp_delete_remote))

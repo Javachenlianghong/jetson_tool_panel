@@ -6,6 +6,7 @@ settings.ini
 reports/
 config/projects.json
 config/task_history.json
+config/remote_preview/
 .pytest_cache/
 .mypy_cache/
 .venv/
