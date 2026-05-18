@@ -133,9 +133,6 @@ def _build_remote_files_panel(window):
     action_row.addWidget(_tool_button("删除远端", window.sftp_delete_remote))
     action_row.addWidget(_tool_button("复制路径", window.copy_remote_selected_paths))
     action_row.addStretch(1)
-    window.remote_file_count_label = QLabel("共 0 项 | 目录 0 | 文件 0")
-    window.remote_file_count_label.setObjectName("FileCountBadge")
-    action_row.addWidget(window.remote_file_count_label)
     layout.addLayout(action_row)
 
     browser_splitter = QSplitter(Qt.Vertical)
@@ -190,9 +187,6 @@ def _build_local_files_panel(window):
     action_row.addWidget(_tool_button("打开位置", window.open_local_selected_path))
     action_row.addWidget(_tool_button("复制路径", window.copy_local_selected_paths))
     action_row.addStretch(1)
-    window.local_file_count_label = QLabel("共 0 项 | 目录 0 | 文件 0")
-    window.local_file_count_label.setObjectName("FileCountBadge")
-    action_row.addWidget(window.local_file_count_label)
     layout.addLayout(action_row)
 
     browser_splitter = QSplitter(Qt.Vertical)

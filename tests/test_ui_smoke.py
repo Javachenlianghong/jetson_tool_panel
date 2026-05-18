@@ -23,13 +23,9 @@ class UiSmokeTest(unittest.TestCase):
             self.assertIsNotNone(window.remote_files_table)
             self.assertIsNotNone(window.local_dir_tree)
             self.assertIsNotNone(window.remote_dir_tree)
-            self.assertIsNotNone(window.local_file_count_label)
-            self.assertIsNotNone(window.remote_file_count_label)
             self.assertIsNotNone(window.transfer_progress_bar)
             self.assertEqual(window.local_files_table.contextMenuPolicy(), Qt.CustomContextMenu)
             self.assertEqual(window.remote_files_table.contextMenuPolicy(), Qt.CustomContextMenu)
-            self.assertIn("文件", window.local_file_count_label.text())
-            self.assertIn("文件", window.remote_file_count_label.text())
             self.assertTrue(hasattr(window, "terminal_cd_remote_path"))
         finally:
             window.deleteLater()

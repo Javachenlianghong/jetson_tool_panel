@@ -170,8 +170,6 @@ class JetsonControlPanel(QMainWindow):
         self.remote_files_table = None
         self.local_dir_tree = None
         self.remote_dir_tree = None
-        self.local_file_count_label = None
-        self.remote_file_count_label = None
         self.transfer_progress_bar = None
         self.sftp_worker = None
         self.sftp_password = None
@@ -771,20 +769,6 @@ class JetsonControlPanel(QMainWindow):
             }
             QLabel#StatusBadge[state="pending"] {
                 background: #e0ecff;
-                color: #1d4ed8;
-            }
-            QLabel#FileCountBadge {
-                background: #eef2f7;
-                border: 1px solid #dbe3ef;
-                border-radius: 12px;
-                color: #475569;
-                font-size: 11px;
-                font-weight: 700;
-                padding: 4px 9px;
-            }
-            QLabel#FileCountBadge[selected="true"] {
-                background: #eff6ff;
-                border-color: #bfdbfe;
                 color: #1d4ed8;
             }
             QTableWidget, QTreeWidget {
@@ -1960,7 +1944,6 @@ class JetsonControlPanel(QMainWindow):
             table.setItem(row_index, 3, QTableWidgetItem(row.get("permission", "")))
         table.resizeColumnsToContents()
         table.horizontalHeader().setStretchLastSection(False)
-        self._update_file_count_label(table)
 
     def _selected_file_rows(self, table):
         rows = []
@@ -1976,38 +1959,6 @@ class JetsonControlPanel(QMainWindow):
             if name_item:
                 rows.append(name_item.data(Qt.UserRole) or {})
         return rows
-
-    def _file_table_rows(self, table):
-        rows = []
-        if table is None:
-            return rows
-        for row_index in range(table.rowCount()):
-            item = table.item(row_index, 0)
-            if item is not None:
-                rows.append(item.data(Qt.UserRole) or {})
-        return rows
-
-    def _file_count_label_for_table(self, table):
-        if table is self.local_files_table:
-            return self.local_file_count_label
-        if table is self.remote_files_table:
-            return self.remote_file_count_label
-        return None
-
-    def _update_file_count_label(self, table):
-        label = self._file_count_label_for_table(table)
-        if label is None:
-            return
-        rows = [row for row in self._file_table_rows(table) if row.get("name") != ".."]
-        selected = [row for row in self._selected_file_rows(table) if row.get("name") != ".."]
-        directory_count = sum(1 for row in rows if row.get("is_dir"))
-        file_count = max(len(rows) - directory_count, 0)
-        text = "共 {} 项 | 目录 {} | 文件 {}".format(len(rows), directory_count, file_count)
-        if selected:
-            text += " | 已选 {}".format(len(selected))
-        label.setText(text)
-        label.setProperty("selected", bool(selected))
-        self._refresh_widget_style(label)
 
     def _dir_tree_label(self, path):
         text = str(path or "")
@@ -2200,7 +2151,6 @@ class JetsonControlPanel(QMainWindow):
     def local_file_selection_changed(self):
         if self.sftp_worker and self.sftp_worker.isRunning():
             return
-        self._update_file_count_label(self.local_files_table)
         rows = [row for row in self._selected_file_rows(self.local_files_table) if row.get("name") != ".."]
         if rows and self.files_summary_label:
             self.files_summary_label.setText("本地已选 {} 项".format(len(rows)))
@@ -2208,7 +2158,6 @@ class JetsonControlPanel(QMainWindow):
     def remote_file_selection_changed(self):
         if self.sftp_worker and self.sftp_worker.isRunning():
             return
-        self._update_file_count_label(self.remote_files_table)
         rows = [row for row in self._selected_file_rows(self.remote_files_table) if row.get("name") != ".."]
         if rows and self.files_summary_label:
             self.files_summary_label.setText("远端已选 {} 项".format(len(rows)))
