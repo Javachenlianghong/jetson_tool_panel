@@ -1,4 +1,16 @@
-from PyQt5.QtWidgets import QCheckBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QTableWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ui.pages.common import build_note, build_panel
 
@@ -63,6 +75,9 @@ def build_transfer_page(window):
     sync_button = QPushButton("同步到 Jetson")
     sync_button.setObjectName("PrimaryButton")
     sync_button.clicked.connect(window.sync_to_jetson)
+    preview_button = QPushButton("预览同步变更")
+    preview_button.setObjectName("PrimaryButton")
+    preview_button.clicked.connect(window.preview_sync_to_jetson)
     pull_button = QPushButton("从 Jetson 拉取项目")
     pull_button.clicked.connect(window.pull_from_jetson)
     init_button = QPushButton("初始化同步状态")
@@ -72,6 +87,7 @@ def build_transfer_page(window):
         ssh_button,
         setup_key_button,
         upload_proxy_button,
+        preview_button,
         sync_button,
         pull_button,
         init_button,
@@ -83,6 +99,22 @@ def build_transfer_page(window):
     buttons_grid.setColumnStretch(1, 1)
     buttons_grid.setColumnStretch(2, 1)
     layout.addWidget(build_panel("快速操作", buttons_grid))
+    preview_layout = QVBoxLayout()
+    window.sync_preview_summary_label = QLabel("先点击“预览同步变更”查看将上传或删除的文件。")
+    window.sync_preview_summary_label.setObjectName("MutedText")
+    preview_layout.addWidget(window.sync_preview_summary_label)
+    window.sync_preview_table = QTableWidget(0, 3)
+    window.sync_preview_table.setHorizontalHeaderLabels(["动作", "路径", "说明"])
+    window.sync_preview_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    window.sync_preview_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    window.sync_preview_table.setAlternatingRowColors(True)
+    window.sync_preview_table.verticalHeader().setVisible(False)
+    window.sync_preview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+    window.sync_preview_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+    window.sync_preview_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+    window.sync_preview_table.setMinimumHeight(150)
+    preview_layout.addWidget(window.sync_preview_table)
+    layout.addWidget(build_panel("同步预览", preview_layout))
     layout.addWidget(build_note("远端 SSH 地址只在窗口顶部填写；此页只维护项目路径和同步选项。"))
     layout.addStretch(1)
     return page

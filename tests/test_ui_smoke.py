@@ -41,7 +41,14 @@ class UiSmokeTest(unittest.TestCase):
             model_page = window.page_stack.widget(window.page_key_to_index["model"])
             model_button_texts = [button.text() for button in model_page.findChildren(QPushButton)]
             self.assertIn("选择", model_button_texts)
+            self.assertIn("检测 TensorRT", model_button_texts)
+            self.assertIn("转换并 Benchmark", model_button_texts)
             self.assertTrue(hasattr(window, "choose_model_source_file"))
+            transfer_page = window.page_stack.widget(window.page_key_to_index["transfer"])
+            transfer_button_texts = [button.text() for button in transfer_page.findChildren(QPushButton)]
+            self.assertIn("预览同步变更", transfer_button_texts)
+            self.assertIsNotNone(window.sync_preview_table)
+            self.assertIsNotNone(window.task_center_table)
         finally:
             window._stop_resource_monitor()
             window.deleteLater()

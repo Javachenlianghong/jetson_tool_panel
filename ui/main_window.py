@@ -39,6 +39,7 @@ from core.config_store import ProjectConfigStore
 from core.paths import DEFAULTS, PATHS
 from core.resource_monitor import ResourceMonitorWorker
 from core.settings import settings_bool
+from core.sync_preview import parse_sync_preview_output
 from core.task_history import TaskHistoryStore
 from core.terminal_filter import PlainTerminalBuffer
 from services import device_health_service, proxy_service, remote_ops_service, ssh_service
@@ -159,6 +160,9 @@ class JetsonControlPanel(
         self.remote_edit = None
         self.remote_path_edit = None
         self.local_root_edit = None
+        self.sync_preview_table = None
+        self.sync_preview_summary_label = None
+        self.last_sync_preview = None
         self.full_sync_check = None
         self.dry_run_check = None
         self.no_delete_check = None
@@ -1718,6 +1722,8 @@ class JetsonControlPanel(
             self._update_service_status_page(data)
         elif title.startswith("服务start:") or title.startswith("服务stop:") or title.startswith("服务restart:"):
             self._note_service_operation_complete(title)
+        elif title == "预览同步变更":
+            self._update_sync_preview(parse_sync_preview_output(self.current_command_output))
         if hasattr(self, "handle_model_command_success"):
             self.handle_model_command_success(title)
 

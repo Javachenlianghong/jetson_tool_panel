@@ -5,12 +5,35 @@ import os
 import subprocess
 from pathlib import Path
 
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtWidgets import QMessageBox, QTableWidgetItem
 
 from services import ssh_service
 
 
 class ProxySyncControllerMixin:
+    def _update_sync_preview(self, preview):
+        self.last_sync_preview = dict(preview or {})
+        if self.sync_preview_summary_label is not None:
+            notes = self.last_sync_preview.get("notes") or []
+            suffix = (" " + " | ".join(notes[:2])) if notes else ""
+            self.sync_preview_summary_label.setText(self.last_sync_preview.get("summary", "同步预览已更新。") + suffix)
+        if self.sync_preview_table is None:
+            return
+        self.sync_preview_table.setRowCount(0)
+        rows = self.last_sync_preview.get("rows") or []
+        for row_index, row in enumerate(rows):
+            self.sync_preview_table.insertRow(row_index)
+            action = {
+                "upload": "上传",
+                "delete": "删除",
+                "more": "更多",
+            }.get(row.get("action"), row.get("action", ""))
+            values = [action, row.get("path", ""), row.get("detail", "")]
+            for column, value in enumerate(values):
+                self.sync_preview_table.setItem(row_index, column, QTableWidgetItem(str(value)))
+        self.sync_preview_table.resizeColumnsToContents()
+        self.sync_preview_table.horizontalHeader().setStretchLastSection(False)
+
     def configure_ssh_key(self):
         remote = self._remote_or_warn()
         if not remote:
@@ -87,6 +110,23 @@ class ProxySyncControllerMixin:
             init=True,
         )
         self._run_command("初始化同步状态", command, cwd=self.paths.project_dir)
+
+    def preview_sync_to_jetson(self):
+        if not self.paths.sync_script.exists():
+            QMessageBox.critical(self, "找不到脚本", "找不到 {}".format(self.paths.sync_script))
+            return
+        remote = self._remote_or_warn()
+        if not remote:
+            return
+        command = ssh_service.sync_command(
+            self.paths.sync_script,
+            remote,
+            self.remote_path_edit.text().strip(),
+            full=self.full_sync_check.isChecked(),
+            dry_run=True,
+            no_delete=self.no_delete_check.isChecked(),
+        )
+        self._run_command("预览同步变更", command, cwd=self.paths.project_dir)
 
     def sync_to_jetson(self):
         if not self.paths.sync_script.exists():
