@@ -3,18 +3,28 @@
 import queue
 import socket
 import struct
+import threading
 import time
 
-from PyQt5.QtCore import QPoint, Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QImage, QPainter
+from PyQt5.QtCore import QPoint, Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QImage, QPainter
 from PyQt5.QtWidgets import QSizePolicy, QWidget
 
 from services import paramiko_service
 
 
 RFB_VERSION = b"RFB 003.008\n"
+VNC_IO_TIMEOUT_SECONDS = 0.03
 ENCODING_RAW = 0
+ENCODING_COPYRECT = 1
+ENCODING_HEXTILE = 5
 ENCODING_DESKTOP_SIZE = -223
+
+HEXTILE_RAW = 1
+HEXTILE_BACKGROUND_SPECIFIED = 2
+HEXTILE_FOREGROUND_SPECIFIED = 4
+HEXTILE_ANY_SUBRECTS = 8
+HEXTILE_SUBRECTS_COLORED = 16
 
 
 class VncClientWorker(QThread):
@@ -34,6 +44,9 @@ class VncClientWorker(QThread):
         self._channel = None
         self._running = True
         self._outgoing = queue.Queue()
+        self._pending_pointer = None
+        self._pointer_lock = threading.Lock()
+        self._last_pointer_mask = 0
         self._width = 0
         self._height = 0
         self._image = None
@@ -46,7 +59,15 @@ class VncClientWorker(QThread):
         self._outgoing.put(struct.pack(">BBHI", 4, 1 if down else 0, 0, int(keysym)))
 
     def send_pointer(self, x, y, button_mask):
-        self._outgoing.put(struct.pack(">BBHH", 5, int(button_mask) & 0xFF, int(x), int(y)))
+        mask = int(button_mask) & 0xFF
+        payload = struct.pack(">BBHH", 5, mask, int(x), int(y))
+        with self._pointer_lock:
+            if mask != self._last_pointer_mask:
+                self._last_pointer_mask = mask
+                self._pending_pointer = None
+                self._outgoing.put(payload)
+            else:
+                self._pending_pointer = payload
 
     def run(self):
         try:
@@ -60,7 +81,7 @@ class VncClientWorker(QThread):
             if transport is None:
                 raise RuntimeError("SSH transport is not available.")
             self._channel = self._open_vnc_channel(transport)
-            self._channel.settimeout(0.5)
+            self._channel.settimeout(VNC_IO_TIMEOUT_SECONDS)
             self.status.emit("已连接 VNC: {}:{}".format(target.display, self.remote_port))
             self._handshake()
             self._request_update(incremental=False)
@@ -160,7 +181,7 @@ class VncClientWorker(QThread):
         self._send(struct.pack(">Bxxx", 0) + pixel_format)
 
     def _set_encodings(self):
-        encodings = [ENCODING_RAW, ENCODING_DESKTOP_SIZE]
+        encodings = [ENCODING_HEXTILE, ENCODING_COPYRECT, ENCODING_RAW, ENCODING_DESKTOP_SIZE]
         payload = struct.pack(">BxH", 2, len(encodings))
         payload += b"".join(struct.pack(">i", item) for item in encodings)
         self._send(payload)
@@ -176,11 +197,13 @@ class VncClientWorker(QThread):
         for _index in range(rect_count):
             x, y, width, height, encoding = struct.unpack(">HHHHi", self._read_exact(12))
             if encoding == ENCODING_RAW:
-                raw = self._read_exact(width * height * 4)
-                rect = QImage(raw, width, height, QImage.Format_RGB32).copy()
-                painter = QPainter(self._image)
-                painter.drawImage(x, y, rect)
-                painter.end()
+                self._draw_raw_rect(x, y, width, height)
+                changed = True
+            elif encoding == ENCODING_COPYRECT:
+                self._handle_copyrect(x, y, width, height)
+                changed = True
+            elif encoding == ENCODING_HEXTILE:
+                self._handle_hextile(x, y, width, height)
                 changed = True
             elif encoding == ENCODING_DESKTOP_SIZE:
                 self._width, self._height = width, height
@@ -193,6 +216,56 @@ class VncClientWorker(QThread):
         if changed and self._image is not None:
             self.framebuffer.emit(self._image.copy())
 
+    def _draw_raw_rect(self, x, y, width, height):
+        raw = self._read_exact(width * height * 4)
+        rect = QImage(raw, width, height, QImage.Format_RGB32).copy()
+        painter = QPainter(self._image)
+        painter.drawImage(x, y, rect)
+        painter.end()
+
+    def _handle_copyrect(self, x, y, width, height):
+        source_x, source_y = struct.unpack(">HH", self._read_exact(4))
+        rect = self._image.copy(source_x, source_y, width, height)
+        painter = QPainter(self._image)
+        painter.drawImage(x, y, rect)
+        painter.end()
+
+    def _handle_hextile(self, x, y, width, height):
+        background = QColor(0, 0, 0)
+        foreground = QColor(255, 255, 255)
+        for tile_y in range(y, y + height, 16):
+            tile_height = min(16, y + height - tile_y)
+            for tile_x in range(x, x + width, 16):
+                tile_width = min(16, x + width - tile_x)
+                subencoding = self._read_exact(1)[0]
+                if subencoding & HEXTILE_RAW:
+                    self._draw_raw_rect(tile_x, tile_y, tile_width, tile_height)
+                    continue
+                if subencoding & HEXTILE_BACKGROUND_SPECIFIED:
+                    background = self._read_pixel_color()
+                painter = QPainter(self._image)
+                painter.fillRect(tile_x, tile_y, tile_width, tile_height, background)
+                painter.end()
+                if subencoding & HEXTILE_FOREGROUND_SPECIFIED:
+                    foreground = self._read_pixel_color()
+                if subencoding & HEXTILE_ANY_SUBRECTS:
+                    subrect_count = self._read_exact(1)[0]
+                    for _index in range(subrect_count):
+                        color = self._read_pixel_color() if subencoding & HEXTILE_SUBRECTS_COLORED else foreground
+                        xy = self._read_exact(1)[0]
+                        wh = self._read_exact(1)[0]
+                        sub_x = xy >> 4
+                        sub_y = xy & 0x0F
+                        sub_width = (wh >> 4) + 1
+                        sub_height = (wh & 0x0F) + 1
+                        painter = QPainter(self._image)
+                        painter.fillRect(tile_x + sub_x, tile_y + sub_y, sub_width, sub_height, color)
+                        painter.end()
+
+    def _read_pixel_color(self):
+        value = int.from_bytes(self._read_exact(4), "little")
+        return QColor((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF)
+
     def _handle_server_cut_text(self):
         self._read_exact(3)
         length = struct.unpack(">I", self._read_exact(4))[0]
@@ -201,11 +274,26 @@ class VncClientWorker(QThread):
 
     def _drain_outgoing(self):
         while self._running:
-            try:
-                payload = self._outgoing.get_nowait()
-            except queue.Empty:
+            sent = False
+            while self._running:
+                try:
+                    payload = self._outgoing.get_nowait()
+                except queue.Empty:
+                    break
+                self._send(payload)
+                sent = True
+            pointer_payload = self._take_pending_pointer()
+            if pointer_payload:
+                self._send(pointer_payload)
+                sent = True
+            if not sent:
                 return
-            self._send(payload)
+
+    def _take_pending_pointer(self):
+        with self._pointer_lock:
+            payload = self._pending_pointer
+            self._pending_pointer = None
+            return payload
 
     def _read_exact(self, size):
         chunks = []
@@ -251,19 +339,28 @@ class VncDisplayWidget(QWidget):
         self._image = QImage()
         self._frame_size = (0, 0)
         self._button_mask = 0
+        self._pending_pointer_event = None
+        self._pointer_emit_timer = QTimer(self)
+        self._pointer_emit_timer.setInterval(16)
+        self._pointer_emit_timer.timeout.connect(self._flush_pending_pointer_event)
         self.setMinimumHeight(420)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
+        self.setCursor(Qt.ArrowCursor)
 
     def set_framebuffer(self, image):
         self._image = image
         self._frame_size = (image.width(), image.height())
+        self.setCursor(Qt.BlankCursor if not image.isNull() else Qt.ArrowCursor)
         self.update()
 
     def clear(self):
         self._image = QImage()
         self._frame_size = (0, 0)
+        self._pending_pointer_event = None
+        self._pointer_emit_timer.stop()
+        self.setCursor(Qt.ArrowCursor)
         self.update()
 
     def paintEvent(self, _event):
@@ -281,11 +378,11 @@ class VncDisplayWidget(QWidget):
     def mousePressEvent(self, event):
         self.setFocus()
         self._button_mask |= self._button_from_event(event)
-        self._emit_pointer(event.pos())
+        self._emit_pointer(event.pos(), immediate=True)
 
     def mouseReleaseEvent(self, event):
         self._button_mask &= ~self._button_from_event(event)
-        self._emit_pointer(event.pos())
+        self._emit_pointer(event.pos(), immediate=True)
 
     def mouseMoveEvent(self, event):
         self._emit_pointer(event.pos())
@@ -313,9 +410,23 @@ class VncDisplayWidget(QWidget):
             return
         super().keyReleaseEvent(event)
 
-    def _emit_pointer(self, point):
+    def _emit_pointer(self, point, immediate=False):
         x, y = self._map_point(point)
-        self.pointer_event.emit(x, y, self._button_mask)
+        if immediate:
+            self._pending_pointer_event = None
+            self.pointer_event.emit(x, y, self._button_mask)
+            return
+        self._pending_pointer_event = (x, y, self._button_mask)
+        if not self._pointer_emit_timer.isActive():
+            self._pointer_emit_timer.start()
+
+    def _flush_pending_pointer_event(self):
+        event = self._pending_pointer_event
+        self._pending_pointer_event = None
+        if event is None:
+            self._pointer_emit_timer.stop()
+            return
+        self.pointer_event.emit(*event)
 
     def _button_from_event(self, event):
         if event.button() == Qt.LeftButton:
