@@ -11,6 +11,18 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from services import paramiko_service, remote_ops_service
 
 
+PROMPT_READY_MARKER = "__JETSON_TOOL_PANEL_PROMPT_READY__"
+
+
+def full_path_prompt_command(marker=PROMPT_READY_MARKER):
+    return (
+        "if [ -n \"$BASH_VERSION\" ]; then "
+        "export PS1='\\u@\\h:$(pwd)\\$ '; "
+        "else PS1='$PWD $ '; fi; "
+        "printf '\\n{}\\n'\n".format(marker)
+    )
+
+
 class SshTerminalWorker(QThread):
     output = pyqtSignal(str)
     connected = pyqtSignal(str)
@@ -26,6 +38,7 @@ class SshTerminalWorker(QThread):
         self._channel = None
         self._running = True
         self._send_queue = Queue()
+        self._suppress_until_marker = None
 
     def run(self):
         try:
@@ -39,6 +52,8 @@ class SshTerminalWorker(QThread):
                 self.output.emit("[host key] 本地保存提示: {}\n".format(save_error))
             self._channel = self._client.invoke_shell(term="xterm", width=120, height=32)
             self._channel.settimeout(0.0)
+            self._suppress_until_marker = PROMPT_READY_MARKER
+            self._channel.send(full_path_prompt_command())
             self.connected.emit(target.display)
 
             while self._running:
@@ -47,7 +62,10 @@ class SshTerminalWorker(QThread):
                     data = self._channel.recv(4096)
                     if not data:
                         break
-                    self.output.emit(paramiko_service.decode_ssh_bytes(data))
+                    decoded = paramiko_service.decode_ssh_bytes(data)
+                    decoded = self._filter_bootstrap_output(decoded)
+                    if decoded:
+                        self.output.emit(decoded)
                 if self._channel.closed or self._channel.exit_status_ready():
                     break
                 time.sleep(0.03)
@@ -71,6 +89,16 @@ class SshTerminalWorker(QThread):
             except Empty:
                 return
             self._channel.send(data)
+
+    def _filter_bootstrap_output(self, text):
+        marker = self._suppress_until_marker
+        if not marker:
+            return text
+        marker_index = text.find(marker)
+        if marker_index < 0:
+            return ""
+        self._suppress_until_marker = None
+        return text[marker_index + len(marker):].lstrip("\r\n")
 
     def send_text(self, text):
         self._send_queue.put(str(text))
