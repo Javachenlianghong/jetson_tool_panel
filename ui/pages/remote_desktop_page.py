@@ -34,6 +34,7 @@ def build_remote_desktop_page(window):
     buttons = QHBoxLayout()
     for text, handler, primary in [
         ("安装 x11vnc", window.install_remote_desktop_service, False),
+        ("终端安装 x11vnc", window.install_remote_desktop_service_in_terminal, False),
         ("启动并连接", window.start_and_connect_remote_desktop, True),
         ("仅连接", window.connect_remote_desktop, True),
         ("查询服务", window.query_remote_desktop_service, False),

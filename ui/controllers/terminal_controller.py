@@ -110,6 +110,8 @@ class TerminalControllerMixin:
             QTimer.singleShot(300, self._send_terminal_display_exports)
         if self.remote_files_table is not None:
             QTimer.singleShot(200, self.refresh_remote_files)
+        if self.pending_terminal_command:
+            QTimer.singleShot(500, self._send_pending_terminal_command)
         self._refresh_task_center()
 
     def _send_terminal_display_exports(self):
@@ -122,6 +124,14 @@ class TerminalControllerMixin:
             "export XAUTHORITY=/home/jetson/.Xauthority\n"
         )
         self._append_log("SSH 终端已发送图形环境变量: DISPLAY=:0, XAUTHORITY=/home/jetson/.Xauthority")
+
+    def _send_pending_terminal_command(self):
+        command = self.pending_terminal_command
+        self.pending_terminal_command = None
+        if not command:
+            return
+        self.terminal_send_text(command, warn=False)
+        self._append_log("SSH 终端已发送待执行命令。")
 
     def _terminal_auth_failed(self, error):
         if self.terminal_worker and self.terminal_worker.password:

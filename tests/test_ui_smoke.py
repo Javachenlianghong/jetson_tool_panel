@@ -57,10 +57,12 @@ class UiSmokeTest(unittest.TestCase):
             self.assertGreaterEqual(window.device_overview_table.rowCount(), 1)
             desktop_page = window.page_stack.widget(window.page_key_to_index["desktop"])
             desktop_button_texts = [button.text() for button in desktop_page.findChildren(QPushButton)]
+            self.assertIn("终端安装 x11vnc", desktop_button_texts)
             self.assertIn("启动并连接", desktop_button_texts)
             self.assertIn("停止服务", desktop_button_texts)
             self.assertIsNotNone(window.remote_desktop_view)
             self.assertTrue(hasattr(window, "connect_remote_desktop"))
+            self.assertTrue(hasattr(window, "install_remote_desktop_service_in_terminal"))
         finally:
             window._stop_resource_monitor()
             window.deleteLater()

@@ -203,6 +203,7 @@ class JetsonControlPanel(
         self.terminal_buffer = PlainTerminalBuffer()
         self.terminal_worker = None
         self.terminal_password = None
+        self.pending_terminal_command = None
         self.remote_desktop_display_edit = None
         self.remote_desktop_xauthority_edit = None
         self.remote_desktop_port_spin = None

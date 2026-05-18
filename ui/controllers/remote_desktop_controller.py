@@ -11,6 +11,18 @@ class RemoteDesktopControllerMixin:
     def install_remote_desktop_service(self):
         self._run_jetson_command("安装远程桌面组件", remote_desktop_service.x11vnc_install_command())
 
+    def install_remote_desktop_service_in_terminal(self):
+        if not self._remote_or_warn():
+            return
+        self.pending_terminal_command = "sudo apt-get update && sudo apt-get install -y x11vnc\n"
+        self._switch_page_by_key("terminal")
+        self._set_remote_desktop_status("已切到 SSH 工作台；请在终端里输入 sudo 密码完成安装")
+        self._append_log("已准备在 SSH 工作台安装 x11vnc。")
+        if self.terminal_worker and self.terminal_worker.isRunning():
+            QTimer.singleShot(200, self._send_pending_terminal_command)
+        else:
+            self.terminal_connect()
+
     def start_remote_desktop_service(self):
         display = self.remote_desktop_display_edit.text().strip() if self.remote_desktop_display_edit else ":0"
         xauthority = (
@@ -152,10 +164,10 @@ class RemoteDesktopControllerMixin:
         output = "\n".join(self.current_command_output).lower()
         if "x11vnc not found" in output or "x11vnc is missing" in output:
             self._set_remote_desktop_status(
-                "Jetson 缺少 x11vnc：点击“安装 x11vnc”，或在 SSH 工作台执行 sudo apt-get install -y x11vnc"
+                "Jetson 缺少 x11vnc：点击“终端安装 x11vnc”，在本软件 SSH 工作台输入 sudo 密码"
             )
-        elif "sudo password is required" in output:
-            self._set_remote_desktop_status("安装需要 sudo 密码：请在 SSH 工作台执行日志里的 apt-get 命令")
+        elif "sudo password is required" in output or "no tty present" in output:
+            self._set_remote_desktop_status("安装需要 sudo 密码：点击“终端安装 x11vnc”并在 SSH 工作台输入密码")
         elif return_code == 127:
             self._set_remote_desktop_status("远程桌面组件缺失，请先安装 x11vnc")
         else:
