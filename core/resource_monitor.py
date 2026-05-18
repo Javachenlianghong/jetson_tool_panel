@@ -160,6 +160,7 @@ class ResourceMonitorWorker(QThread):
         try:
             self._process = subprocess.Popen(
                 command,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 bufsize=0,

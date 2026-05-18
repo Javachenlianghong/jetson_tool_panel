@@ -236,6 +236,11 @@ class JetsonControlPanel(QMainWindow):
         self.current_command_title = None
         self.current_command_output = []
         self.current_command_started = None
+        self.current_command_timeout_seconds = None
+        self.command_timed_out = False
+        self.command_timeout_timer = QTimer(self)
+        self.command_timeout_timer.setSingleShot(True)
+        self.command_timeout_timer.timeout.connect(self._command_timed_out)
         self.workflow_queue = []
         self.status_labels = {}
         self.status_dots = {}
@@ -1452,7 +1457,7 @@ class JetsonControlPanel(QMainWindow):
             button.setEnabled(not running)
         self.stop_button.setEnabled(running)
 
-    def _run_command(self, title, command, cwd=None):
+    def _run_command(self, title, command, cwd=None, timeout_seconds=None):
         if self.worker and self.worker.isRunning():
             QMessageBox.warning(self, "命令正在运行", "请等待当前命令结束，或先点击“停止当前命令”。")
             return
@@ -1465,28 +1470,44 @@ class JetsonControlPanel(QMainWindow):
         self.current_command_title = title
         self.current_command_output = []
         self.current_command_started = datetime.now()
+        self.current_command_timeout_seconds = timeout_seconds
+        self.command_timed_out = False
 
         self.worker = CommandWorker(command, cwd=cwd, parent=self)
         self.worker.output.connect(self._handle_command_output)
         self.worker.failed_to_start.connect(self._command_failed_to_start)
         self.worker.finished_ok.connect(self._command_finished)
         self.worker.start()
+        if timeout_seconds:
+            self.command_timeout_timer.start(max(int(timeout_seconds), 1) * 1000)
 
     def _handle_command_output(self, line):
         self.current_command_output.append(line)
         self._append_log(line)
 
+    def _command_timed_out(self):
+        if not self.worker or not self.worker.isRunning():
+            return
+        self.command_timed_out = True
+        self._append_log("命令超时，正在强制停止。")
+        self.worker.terminate_process()
+
     def _command_failed_to_start(self, error):
+        self.command_timeout_timer.stop()
         self._append_log("无法启动命令: " + error)
         self._set_running(False)
 
     def _command_finished(self, return_code):
+        self.command_timeout_timer.stop()
         title = self.current_command_title or ""
         if return_code == 0:
             self._append_log("命令完成。")
             self._handle_command_success(title)
         else:
-            self._append_log("命令失败，退出码: {}".format(return_code))
+            if self.command_timed_out:
+                self._append_log("命令已因超时停止，退出码: {}".format(return_code))
+            else:
+                self._append_log("命令失败，退出码: {}".format(return_code))
             if title == "开发环境检查":
                 for section_title in self.environment_result_labels:
                     self._set_environment_result_card(section_title, "error", "失败", "检查失败，请查看底部日志")
@@ -1510,6 +1531,8 @@ class JetsonControlPanel(QMainWindow):
         self._record_task_history(title, return_code)
         self._set_running(False)
         self.current_command_title = None
+        self.current_command_timeout_seconds = None
+        self.command_timed_out = False
         if return_code == 0 and self.workflow_queue:
             self._run_next_workflow_command()
 
@@ -1658,7 +1681,12 @@ class JetsonControlPanel(QMainWindow):
             QMessageBox.warning(self, "缺少 SSH 地址", "请在窗口顶部填写远端 SSH，例如 jetson@192.168.55.1。")
             return
         self._top_remote_editing_finished()
-        self._run_command("测试 SSH", ssh_service.test_ssh_command(remote), cwd=self.paths.app_dir)
+        self._run_command(
+            "测试 SSH",
+            ssh_service.test_ssh_command(remote),
+            cwd=self.paths.app_dir,
+            timeout_seconds=15,
+        )
 
     def _remote_or_warn(self):
         remote = self._normalize_remote_text(self.remote_edit.text()) if self.remote_edit is not None else ""

@@ -65,6 +65,7 @@ class CommandWorker(QThread):
             self._process = subprocess.Popen(
                 self.command,
                 cwd=self.cwd,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 bufsize=0,
@@ -81,6 +82,16 @@ class CommandWorker(QThread):
         return_code = self._process.wait()
         self.finished_ok.emit(return_code)
 
-    def terminate_process(self):
+    def terminate_process(self, kill_after_seconds=2):
         if self._process and self._process.poll() is None:
-            self._process.terminate()
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=kill_after_seconds)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                try:
+                    self._process.wait(timeout=kill_after_seconds)
+                except subprocess.TimeoutExpired:
+                    pass
+            except OSError:
+                pass

@@ -7,7 +7,7 @@ from core.command_runner import quote_for_powershell
 
 
 def ssh_options(batch_mode=True):
-    options = []
+    options = ["-n"]
     if batch_mode:
         options.extend(["-o", "BatchMode=yes"])
     options.extend([
