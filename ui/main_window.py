@@ -4,7 +4,6 @@
 
 import base64
 import os
-import shlex
 import shutil
 import socket
 import subprocess
@@ -176,7 +175,6 @@ class JetsonControlPanel(QMainWindow):
         self.service_status_text = None
         self.terminal_status_label = None
         self.terminal_output_edit = None
-        self.terminal_input_edit = None
         self.terminal_worker = None
         self.terminal_password = None
         self.health_refresh_button = None
@@ -830,12 +828,6 @@ class JetsonControlPanel(QMainWindow):
                 background: #0f172a;
                 border-color: #1e293b;
                 color: #e5e7eb;
-                selection-background-color: #2563eb;
-            }
-            QLineEdit#TerminalInput {
-                background: #111827;
-                border-color: #334155;
-                color: #f8fafc;
                 selection-background-color: #2563eb;
             }
             QSplitter::handle {
@@ -1594,15 +1586,16 @@ class JetsonControlPanel(QMainWindow):
         if self.terminal_status_label:
             self.terminal_status_label.setText("已断开")
 
-    def terminal_send_command(self):
-        command = self.terminal_input_edit.text() if self.terminal_input_edit else ""
-        if not command.strip():
+    def terminal_send_text(self, text, warn=False):
+        if not text:
             return
         if not self.terminal_worker or not self.terminal_worker.isRunning():
-            QMessageBox.warning(self, "终端未连接", "请先连接 SSH 终端。")
+            if warn:
+                QMessageBox.warning(self, "终端未连接", "请先连接 SSH 终端。")
+            elif self.terminal_status_label:
+                self.terminal_status_label.setText("未连接")
             return
-        self.terminal_worker.send_text(command + "\n")
-        self.terminal_input_edit.clear()
+        self.terminal_worker.send_text(text)
 
     def terminal_interrupt(self):
         if self.terminal_worker and self.terminal_worker.isRunning():
@@ -1631,6 +1624,8 @@ class JetsonControlPanel(QMainWindow):
             self.terminal_status_label.setText("已连接: " + display)
         self._update_status("ssh", "已连接", display)
         self._append_log("SSH 终端已连接: " + display)
+        if self.terminal_output_edit:
+            self.terminal_output_edit.setFocus()
         if self.remote_files_table is not None:
             QTimer.singleShot(200, self.refresh_remote_files)
 
@@ -2001,17 +1996,15 @@ class JetsonControlPanel(QMainWindow):
             return paramiko_service.parent_remote_path(path)
         return self.remote_file_path_edit.text().strip() if self.remote_file_path_edit is not None else ""
 
-    def terminal_cd_remote_path(self, remote_path=None):
+    def remote_open_selected_path(self, remote_path=None):
         path = str(remote_path or self._remote_cd_target_from_selection() or "").strip()
         if not path:
             QMessageBox.warning(self, "缺少远端路径", "没有可进入的远端目录。")
             return
-        if not self.terminal_worker or not self.terminal_worker.isRunning():
-            QMessageBox.warning(self, "终端未连接", "请先连接 SSH 终端。")
-            return
-        self.terminal_worker.send_text("cd {}\n".format(shlex.quote(path)))
+        self.remote_file_path_edit.setText(path)
+        self.refresh_remote_files()
         if self.files_summary_label:
-            self.files_summary_label.setText("已发送终端切换目录: {}".format(path))
+            self.files_summary_label.setText("已进入远端目录: {}".format(path))
 
     def open_local_selected_path(self):
         rows = [row for row in self._selected_file_rows(self.local_files_table) if row.get("path")]
@@ -2075,7 +2068,7 @@ class JetsonControlPanel(QMainWindow):
         rows = [row for row in self._select_context_file_row(self.remote_files_table, pos) if row.get("name") != ".."]
         menu = QMenu(self)
         download_action = menu.addAction("下载选中")
-        cd_action = menu.addAction("终端进入此目录")
+        cd_action = menu.addAction("进入此目录")
         mkdir_action = menu.addAction("新建远端目录")
         delete_action = menu.addAction("删除远端")
         menu.addSeparator()
@@ -2088,7 +2081,7 @@ class JetsonControlPanel(QMainWindow):
         if action == download_action:
             self.sftp_download_selected()
         elif action == cd_action:
-            self.terminal_cd_remote_path()
+            self.remote_open_selected_path()
         elif action == mkdir_action:
             self.sftp_mkdir_remote()
         elif action == delete_action:

@@ -18,13 +18,12 @@ class UiSmokeTest(unittest.TestCase):
         try:
             self.assertIn("terminal", window.page_key_to_index)
             self.assertIsNotNone(window.terminal_output_edit)
-            self.assertIsNotNone(window.terminal_input_edit)
             self.assertIsNotNone(window.local_files_table)
             self.assertIsNotNone(window.remote_files_table)
             self.assertIsNotNone(window.transfer_progress_bar)
             self.assertEqual(window.local_files_table.contextMenuPolicy(), Qt.CustomContextMenu)
             self.assertEqual(window.remote_files_table.contextMenuPolicy(), Qt.CustomContextMenu)
-            self.assertTrue(hasattr(window, "terminal_cd_remote_path"))
+            self.assertTrue(hasattr(window, "remote_open_selected_path"))
         finally:
             window.deleteLater()
             app.processEvents()

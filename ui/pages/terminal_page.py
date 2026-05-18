@@ -2,6 +2,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -56,6 +57,68 @@ def _build_file_table(minimum_height=120):
     return table
 
 
+class TerminalOutput(QPlainTextEdit):
+    def __init__(self, window):
+        super().__init__()
+        self.window = window
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        modifiers = event.modifiers()
+        ctrl = bool(modifiers & Qt.ControlModifier)
+        shift = bool(modifiers & Qt.ShiftModifier)
+
+        if ctrl and shift and key == Qt.Key_C:
+            self.copy()
+            event.accept()
+            return
+        if (ctrl and key == Qt.Key_V) or (ctrl and shift and key == Qt.Key_V):
+            text = QApplication.clipboard().text()
+            if text:
+                self.window.terminal_send_text(text.replace("\r\n", "\n").replace("\r", "\n"))
+            event.accept()
+            return
+        if ctrl and key == Qt.Key_C:
+            self.window.terminal_interrupt()
+            event.accept()
+            return
+
+        special_keys = {
+            Qt.Key_Return: "\r",
+            Qt.Key_Enter: "\r",
+            Qt.Key_Backspace: "\x7f",
+            Qt.Key_Tab: "\t",
+            Qt.Key_Left: "\x1b[D",
+            Qt.Key_Right: "\x1b[C",
+            Qt.Key_Up: "\x1b[A",
+            Qt.Key_Down: "\x1b[B",
+            Qt.Key_Home: "\x1b[H",
+            Qt.Key_End: "\x1b[F",
+            Qt.Key_Delete: "\x1b[3~",
+            Qt.Key_PageUp: "\x1b[5~",
+            Qt.Key_PageDown: "\x1b[6~",
+            Qt.Key_Escape: "\x1b",
+        }
+        if key in special_keys:
+            self.window.terminal_send_text(special_keys[key])
+            event.accept()
+            return
+
+        if ctrl and Qt.Key_A <= key <= Qt.Key_Z:
+            self.window.terminal_send_text(chr(key - Qt.Key_A + 1))
+            event.accept()
+            return
+
+        text = event.text()
+        if text and not (modifiers & Qt.AltModifier):
+            self.window.terminal_send_text(text)
+            event.accept()
+            return
+
+        super().keyPressEvent(event)
+
+
 def _build_session_bar(window):
     layout = QHBoxLayout()
     layout.setSpacing(8)
@@ -78,7 +141,7 @@ def _build_terminal_panel(window):
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(8)
 
-    window.terminal_output_edit = QPlainTextEdit()
+    window.terminal_output_edit = TerminalOutput(window)
     window.terminal_output_edit.setObjectName("TerminalOutput")
     window.terminal_output_edit.setReadOnly(True)
     window.terminal_output_edit.setLineWrapMode(QPlainTextEdit.NoWrap)
@@ -87,18 +150,9 @@ def _build_terminal_panel(window):
     terminal_font.setPointSize(10)
     window.terminal_output_edit.setFont(terminal_font)
 
-    command_row = QHBoxLayout()
-    command_row.setSpacing(8)
-    window.terminal_input_edit = QLineEdit()
-    window.terminal_input_edit.setObjectName("TerminalInput")
-    window.terminal_input_edit.setPlaceholderText("输入命令后按 Enter")
-    window.terminal_input_edit.returnPressed.connect(window.terminal_send_command)
-    QShortcut(QKeySequence("Ctrl+C"), window.terminal_input_edit, activated=window.terminal_interrupt)
-    command_row.addWidget(window.terminal_input_edit, 1)
-    command_row.addWidget(_tool_button("发送", window.terminal_send_command, primary=True))
+    QShortcut(QKeySequence("Ctrl+C"), window.terminal_output_edit, activated=window.terminal_interrupt)
 
     layout.addWidget(window.terminal_output_edit, 1)
-    layout.addLayout(command_row)
     return _panel("终端", layout)
 
 
@@ -118,7 +172,7 @@ def _build_remote_files_panel(window):
 
     action_row = QHBoxLayout()
     action_row.setSpacing(6)
-    action_row.addWidget(_tool_button("终端进入", window.terminal_cd_remote_path))
+    action_row.addWidget(_tool_button("进入目录", window.remote_open_selected_path))
     action_row.addWidget(_tool_button("新建目录", window.sftp_mkdir_remote))
     action_row.addWidget(_tool_button("删除远端", window.sftp_delete_remote))
     action_row.addWidget(_tool_button("复制路径", window.copy_remote_selected_paths))
