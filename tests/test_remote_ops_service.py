@@ -12,7 +12,9 @@ class RemoteOpsServiceTest(unittest.TestCase):
 
     def test_tensorrt_command_uses_precision_flag(self):
         command = remote_ops_service.tensorrt_command("/tmp", "model.onnx", "model.engine", "fp16")
-        self.assertIn("trtexec", command)
+        self.assertIn("trtexec_bin", command)
+        self.assertIn("/usr/src/tensorrt/bin/trtexec", command)
+        self.assertIn('"$trtexec_bin"', command)
         self.assertIn("--fp16", command)
         self.assertIn("--onnx=model.onnx", command)
 
@@ -56,6 +58,7 @@ class RemoteOpsServiceTest(unittest.TestCase):
 
     def test_tensorrt_benchmark_loads_existing_engine(self):
         command = remote_ops_service.tensorrt_benchmark_command("/tmp/demo", "model.engine")
+        self.assertIn("trtexec_bin", command)
         self.assertIn("--loadEngine=", command)
         self.assertIn("--duration=10", command)
 

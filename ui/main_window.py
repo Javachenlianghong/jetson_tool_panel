@@ -42,6 +42,7 @@ from PyQt5.QtWidgets import (
 from core.command_runner import CommandWorker, format_command
 from core.config_store import ProjectConfigStore, slugify
 from core.paths import DEFAULTS, PATHS
+from core.resource_monitor import ResourceMonitorWorker
 from core.settings import settings_bool
 from core.task_history import TaskHistoryStore
 from core.ssh_workers import SftpWorker, SshTerminalWorker
@@ -238,6 +239,10 @@ class JetsonControlPanel(QMainWindow):
         self.workflow_queue = []
         self.status_labels = {}
         self.status_dots = {}
+        self.monitor_labels = {}
+        self.monitor_status_label = None
+        self.resource_monitor_worker = None
+        self.resource_monitor_remote = None
         self.health_timer = QTimer(self)
         self.health_timer.timeout.connect(self.refresh_device_health)
 
@@ -251,6 +256,7 @@ class JetsonControlPanel(QMainWindow):
         self._apply_active_context_to_forms()
         self._refresh_task_history()
         self._append_log("就绪。")
+        self._restart_resource_monitor()
 
     def _build_ui(self):
         self.navigation_groups = self._navigation_groups()
@@ -349,6 +355,7 @@ class JetsonControlPanel(QMainWindow):
         self.log_splitter.setStretchFactor(1, 0)
         self.log_splitter.setSizes([560, 160])
         main_layout.addWidget(self.log_splitter, 1)
+        main_layout.addWidget(self._build_resource_monitor_bar())
 
         root_layout.addWidget(main, 1)
         self.setCentralWidget(central)
@@ -511,6 +518,44 @@ class JetsonControlPanel(QMainWindow):
         }
         return card
 
+    def _build_resource_monitor_bar(self):
+        bar = QFrame()
+        bar.setObjectName("MonitorBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(12, 7, 12, 7)
+        layout.setSpacing(14)
+
+        title = QLabel("资源监控")
+        title.setObjectName("MonitorTitle")
+        layout.addWidget(title)
+
+        self.monitor_labels = {}
+        for key, name in (
+            ("cpu", "CPU"),
+            ("memory", "内存"),
+            ("gpu", "GPU"),
+            ("temperature", "温度"),
+        ):
+            label = QLabel("--")
+            label.setObjectName("MonitorValue")
+            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.monitor_labels[key] = label
+
+            group = QHBoxLayout()
+            group.setSpacing(5)
+            name_label = QLabel(name)
+            name_label.setObjectName("MonitorName")
+            group.addWidget(name_label)
+            group.addWidget(label)
+            layout.addLayout(group)
+
+        layout.addStretch(1)
+        self.monitor_status_label = QLabel("未连接")
+        self.monitor_status_label.setObjectName("MonitorStatus")
+        self.monitor_status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.monitor_status_label)
+        return bar
+
     def _switch_page(self, index):
         if not self.page_stack:
             return
@@ -540,6 +585,52 @@ class JetsonControlPanel(QMainWindow):
         dot.setProperty("state", dot_state)
         dot.style().unpolish(dot)
         dot.style().polish(dot)
+
+    def _update_resource_monitor(self, metrics):
+        if not metrics:
+            return
+        for key in ("cpu", "memory", "gpu", "temperature"):
+            label = self.monitor_labels.get(key)
+            if label is not None:
+                label.setText(str(metrics.get(key) or "未知"))
+        raw = str(metrics.get("raw") or "")
+        for label in self.monitor_labels.values():
+            label.setToolTip(raw)
+        if self.monitor_status_label is not None:
+            self.monitor_status_label.setText(
+                "监控中: {}".format(self.resource_monitor_remote or self._normalize_remote_text(self.remote_edit.text()))
+            )
+            self.monitor_status_label.setToolTip(raw)
+
+    def _set_resource_monitor_status(self, status):
+        if self.monitor_status_label is not None:
+            self.monitor_status_label.setText(str(status or "未知"))
+
+    def _stop_resource_monitor(self):
+        worker = self.resource_monitor_worker
+        self.resource_monitor_worker = None
+        if worker and worker.isRunning():
+            worker.stop()
+            worker.wait(2000)
+
+    def _restart_resource_monitor(self):
+        remote = self._normalize_remote_text(self.remote_edit.text()) if self.remote_edit is not None else ""
+        if remote and self.remote_edit is not None and remote != self.remote_edit.text().strip():
+            self.remote_edit.setText(remote)
+        self._stop_resource_monitor()
+        self.resource_monitor_remote = remote
+        for label in self.monitor_labels.values():
+            label.setText("--")
+            label.setToolTip("")
+        if not remote:
+            self._set_resource_monitor_status("未配置 SSH")
+            return
+        self._set_resource_monitor_status("监控连接中: {}".format(remote))
+        worker = ResourceMonitorWorker(remote, parent=self)
+        worker.metrics.connect(self._update_resource_monitor)
+        worker.status.connect(self._set_resource_monitor_status)
+        self.resource_monitor_worker = worker
+        worker.start()
 
     def _show_about(self):
         QMessageBox.information(
@@ -653,6 +744,29 @@ class JetsonControlPanel(QMainWindow):
                 color: #172033;
                 font-size: 13px;
                 font-weight: 700;
+            }
+            QFrame#MonitorBar {
+                background: #ffffff;
+                border: 1px solid #dde3ec;
+                border-radius: 8px;
+            }
+            QLabel#MonitorTitle {
+                color: #172033;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QLabel#MonitorName {
+                color: #667085;
+                font-size: 12px;
+            }
+            QLabel#MonitorValue {
+                color: #172033;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QLabel#MonitorStatus {
+                color: #475569;
+                font-size: 12px;
             }
             QFrame#Panel {
                 background: #ffffff;
@@ -978,6 +1092,7 @@ class JetsonControlPanel(QMainWindow):
         if self.device_remote_edit is not None:
             self.device_remote_edit.setText(remote)
         self._refresh_workbench()
+        self._restart_resource_monitor()
 
     def _combo_current_data(self, combo):
         if combo is None or combo.currentIndex() < 0:
@@ -1023,6 +1138,7 @@ class JetsonControlPanel(QMainWindow):
         self.config_store.set_active_device(device_id)
         self._refresh_config_selectors()
         self._apply_active_context_to_forms()
+        self._restart_resource_monitor()
 
     def _active_project_changed(self, *_args):
         project_id = self._combo_current_data(self.active_project_combo)
@@ -1400,6 +1516,7 @@ class JetsonControlPanel(QMainWindow):
     def _handle_command_success(self, title):
         if title == "测试 SSH":
             self._update_status("ssh", "已连接", self._normalize_remote_text(self.remote_edit.text()))
+            self._restart_resource_monitor()
         elif title in ("启用临时防火墙规则", "以管理员窗口启用防火墙规则"):
             detail = "{}:{}".format(self.ip_combo.currentText().strip(), self.port_spin.value())
             self._update_status("proxy", "已启用", detail)
@@ -2897,6 +3014,94 @@ class JetsonControlPanel(QMainWindow):
             self.model_precision_combo.currentText(),
         )
 
+    def _remote_model_file_candidates(self, password=None):
+        remote = self._remote_or_warn()
+        if not remote:
+            return []
+        workdir = self.model_workdir_edit.text().strip() if self.model_workdir_edit else ""
+        workdir = workdir or "."
+        client = None
+        sftp = None
+        try:
+            client, _target = paramiko_service.create_ssh_client(
+                remote,
+                password=password if password is not None else (self.sftp_password or self.terminal_password),
+            )
+            sftp = client.open_sftp()
+            root = sftp.normalize(workdir)
+            candidates = []
+            stack = [(root, 0)]
+            model_extensions = (".onnx", ".engine", ".rknn", ".pt", ".pth", ".tflite")
+            skip_dirs = {".git", "__pycache__", "build", "cmake-build-debug", "cmake-build-release"}
+            while stack:
+                directory, depth = stack.pop()
+                try:
+                    attrs = sftp.listdir_attr(directory)
+                except OSError:
+                    continue
+                for attr in attrs:
+                    name = attr.filename
+                    if name in (".", ".."):
+                        continue
+                    remote_path = paramiko_service.join_remote_path(directory, name)
+                    item = paramiko_service.sftp_attr_to_item(name, attr)
+                    if item.get("is_dir"):
+                        if depth < 3 and name not in skip_dirs:
+                            stack.append((remote_path, depth + 1))
+                        continue
+                    if name.lower().endswith(model_extensions):
+                        relative = posixpath.relpath(remote_path, root)
+                        candidates.append(relative if not relative.startswith("..") else remote_path)
+            return sorted(set(candidates), key=lambda item: (item.count("/"), item.lower()))
+        finally:
+            try:
+                if sftp is not None:
+                    sftp.close()
+            except Exception:
+                pass
+            try:
+                if client is not None:
+                    client.close()
+            except Exception:
+                pass
+
+    def choose_model_source_file(self):
+        try:
+            candidates = self._remote_model_file_candidates()
+        except Exception as exc:
+            if "Authentication" not in exc.__class__.__name__:
+                QMessageBox.warning(self, "选择模型失败", str(exc))
+                return
+            password = self._prompt_ssh_password("SFTP 认证")
+            if password is None:
+                return
+            self.sftp_password = password
+            try:
+                candidates = self._remote_model_file_candidates(password=password)
+            except Exception as retry_exc:
+                QMessageBox.warning(self, "选择模型失败", str(retry_exc))
+                return
+        if not candidates:
+            QMessageBox.information(
+                self,
+                "未找到模型文件",
+                "在远程目录 {} 下未找到 .onnx、.engine、.rknn、.pt、.pth 或 .tflite 文件。".format(
+                    self.model_workdir_edit.text().strip() or "."
+                ),
+            )
+            return
+        selected, ok = QInputDialog.getItem(
+            self,
+            "选择输入模型",
+            "远端模型文件",
+            candidates,
+            0,
+            False,
+        )
+        if ok and selected:
+            self.model_source_edit.setText(selected)
+            self._append_log("已选择输入模型: " + selected)
+
     def run_tensorrt_conversion(self):
         self._run_jetson_command("TensorRT 模型转换", self._current_tensorrt_command())
 
@@ -3343,6 +3548,7 @@ class JetsonControlPanel(QMainWindow):
         if self.terminal_worker and self.terminal_worker.isRunning():
             self.terminal_worker.stop()
             self.terminal_worker.wait(2000)
+        self._stop_resource_monitor()
         self._save_settings()
         event.accept()
 

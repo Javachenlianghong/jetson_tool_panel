@@ -24,6 +24,26 @@ class TerminalFilterTest(unittest.TestCase):
         buffer.feed("\r\x1b[Kjetson@nano:~/app$ python3 app.py")
         self.assertEqual(buffer.to_text(), "jetson@nano:~/app$ python3 app.py")
 
+    def test_terminal_buffer_clears_tail_when_history_line_gets_shorter(self):
+        buffer = PlainTerminalBuffer()
+        buffer.feed("jetson@nano:~/app$ python3 very-long-command.py")
+        buffer.feed("\rjetson@nano:~/app$ ls\x1b[K")
+        self.assertEqual(buffer.to_text(), "jetson@nano:~/app$ ls")
+
+    def test_terminal_buffer_clears_line_when_history_moves_down_to_empty(self):
+        buffer = PlainTerminalBuffer()
+        buffer.feed("jetson@nano:~/app$ python3 app.py")
+        buffer.feed("\rjetson@nano:~/app$ \x1b[K")
+        self.assertEqual(buffer.to_text(), "jetson@nano:~/app$ ")
+
+    def test_terminal_buffer_handles_cursor_key_redraw_split_across_chunks(self):
+        buffer = PlainTerminalBuffer()
+        buffer.feed("jetson@nano:~/app$ python3 app.py")
+        buffer.feed("\rjetson@nano:~/app$ l")
+        buffer.feed("s\x1b")
+        buffer.feed("[K")
+        self.assertEqual(buffer.to_text(), "jetson@nano:~/app$ ls")
+
     def test_terminal_buffer_keeps_incomplete_escape_for_next_chunk(self):
         buffer = PlainTerminalBuffer()
         buffer.feed("prompt old\r\x1b")

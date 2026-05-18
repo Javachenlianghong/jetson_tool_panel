@@ -52,6 +52,13 @@ PROTECTED_REMOTE_PATHS = {
     "/var",
 }
 
+TRTEXEC_CANDIDATES = (
+    "/usr/src/tensorrt/bin/trtexec",
+    "/usr/local/tensorrt/bin/trtexec",
+    "/usr/local/TensorRT/bin/trtexec",
+    "/opt/tensorrt/bin/trtexec",
+)
+
 
 def clean_remote_path(remote_path):
     return str(remote_path or "").strip()
@@ -817,27 +824,50 @@ def service_command(service_name, action):
     return "echo Unsupported service action: {}".format(quote_for_bash(action))
 
 
+def trtexec_resolver_command():
+    candidates = " ".join(quote_for_bash(path) for path in TRTEXEC_CANDIDATES)
+    return (
+        'trtexec_bin="$(command -v trtexec || true)"; '
+        'if [ -z "$trtexec_bin" ]; then '
+        "for candidate in {}; do "
+        'if [ -x "$candidate" ]; then trtexec_bin="$candidate"; break; fi; '
+        "done; "
+        "fi; "
+        'if [ -z "$trtexec_bin" ]; then '
+        "echo 'ERROR: trtexec not found. Install TensorRT samples or add trtexec to PATH.' >&2; "
+        "exit 127; "
+        "fi"
+    ).format(candidates)
+
+
 def tensorrt_command(workdir, onnx_path, engine_path, precision):
     precision_flag = "--fp16" if precision.lower() == "fp16" else ""
     if precision.lower() == "int8":
         precision_flag = "--int8"
     args = [
-        "trtexec",
         "--onnx={}".format(onnx_path.strip()),
         "--saveEngine={}".format(engine_path.strip()),
     ]
     if precision_flag:
         args.append(precision_flag)
-    return "set -e; cd {}; {}".format(
+    return 'set -e; cd {}; {}; "$trtexec_bin" {}'.format(
         quote_for_bash(workdir.strip() or "."),
+        trtexec_resolver_command(),
         " ".join(quote_for_bash(part) for part in args),
     )
 
 
 def tensorrt_benchmark_command(workdir, engine_path):
-    return "set -e; cd {}; trtexec --loadEngine={} --warmUp=200 --duration=10 --useCudaGraph".format(
+    args = [
+        "--loadEngine={}".format(engine_path.strip()),
+        "--warmUp=200",
+        "--duration=10",
+        "--useCudaGraph",
+    ]
+    return 'set -e; cd {}; {}; "$trtexec_bin" {}'.format(
         quote_for_bash(workdir.strip() or "."),
-        quote_for_bash(engine_path.strip()),
+        trtexec_resolver_command(),
+        " ".join(quote_for_bash(part) for part in args),
     )
 
 

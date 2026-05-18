@@ -1,6 +1,7 @@
 """QThread workers for Paramiko SSH shell and SFTP operations."""
 
 import posixpath
+import re
 import stat
 import time
 from pathlib import Path
@@ -15,12 +16,18 @@ PROMPT_READY_MARKER = "__JETSON_TOOL_PANEL_PROMPT_READY__"
 
 
 def full_path_prompt_command(marker=PROMPT_READY_MARKER):
+    safe_marker = str(marker).replace("'", "'\"'\"'")
     return (
+        "__jtp_marker='__MARKER__'; "
         "if [ -n \"$BASH_VERSION\" ]; then "
         "export PS1='\\u@\\h:$(pwd)\\$ '; "
+        "__jtp_hist_nums=\"$(history | awk -v marker=\"$__jtp_marker\" 'index($0, marker) {print $1}' | sort -nr)\"; "
+        "for n in $__jtp_hist_nums; do history -d \"$n\" 2>/dev/null || true; done; "
+        "history -w 2>/dev/null || true; "
         "else PS1='$PWD $ '; fi; "
-        "printf '\\n{}\\n'\n".format(marker)
-    )
+        "printf '\\n%s\\n' \"$__jtp_marker\"; "
+        "unset __jtp_marker __jtp_hist_nums\n"
+    ).replace("__MARKER__", safe_marker)
 
 
 class SshTerminalWorker(QThread):
@@ -39,6 +46,7 @@ class SshTerminalWorker(QThread):
         self._running = True
         self._send_queue = Queue()
         self._suppress_until_marker = None
+        self._bootstrap_buffer = ""
 
     def run(self):
         try:
@@ -94,11 +102,15 @@ class SshTerminalWorker(QThread):
         marker = self._suppress_until_marker
         if not marker:
             return text
-        marker_index = text.find(marker)
-        if marker_index < 0:
+        combined = self._bootstrap_buffer + text
+        pattern = r"(?:^|[\r\n]){}(?:\r\n|\r|\n|$)".format(re.escape(marker))
+        marker_match = re.search(pattern, combined)
+        if not marker_match:
+            self._bootstrap_buffer = combined[-max(len(marker) + 8, 512):]
             return ""
         self._suppress_until_marker = None
-        return text[marker_index + len(marker):].lstrip("\r\n")
+        self._bootstrap_buffer = ""
+        return combined[marker_match.end():].lstrip("\r\n")
 
     def send_text(self, text):
         self._send_queue.put(str(text))

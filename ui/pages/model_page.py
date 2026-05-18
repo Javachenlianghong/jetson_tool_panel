@@ -21,6 +21,14 @@ def build_model_page(window):
     window.model_test_image_edit = QLineEdit("test.jpg")
     window.model_precision_combo = QComboBox()
     window.model_precision_combo.addItems(["fp16", "fp32", "int8"])
+    choose_source_button = QPushButton("选择")
+    choose_source_button.clicked.connect(window.choose_model_source_file)
+
+    source_row = QHBoxLayout()
+    source_row.setContentsMargins(0, 0, 0, 0)
+    source_row.setSpacing(6)
+    source_row.addWidget(window.model_source_edit, 1)
+    source_row.addWidget(choose_source_button)
 
     grid.addWidget(QLabel("模型配置"), 0, 0)
     grid.addWidget(window.model_profile_combo, 0, 1)
@@ -29,7 +37,7 @@ def build_model_page(window):
     grid.addWidget(QLabel("远程目录"), 2, 0)
     grid.addWidget(window.model_workdir_edit, 2, 1)
     grid.addWidget(QLabel("输入模型"), 3, 0)
-    grid.addWidget(window.model_source_edit, 3, 1)
+    grid.addLayout(source_row, 3, 1)
     grid.addWidget(QLabel("输出文件"), 4, 0)
     grid.addWidget(window.model_output_edit, 4, 1)
     grid.addWidget(QLabel("测试图片"), 5, 0)
