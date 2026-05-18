@@ -34,8 +34,18 @@ class RemoteDesktopControllerMixin:
         self._set_remote_desktop_status("正在启动 Jetson x11vnc...")
         self._run_jetson_command(
             "启动远程桌面服务",
-            remote_desktop_service.x11vnc_start_command(display, xauthority, port),
+            remote_desktop_service.x11vnc_start_command(display, xauthority, port, self._remote_desktop_scale()),
         )
+
+    def _remote_desktop_scale(self):
+        mode = self.remote_desktop_performance_combo.currentText() if self.remote_desktop_performance_combo else ""
+        if "流畅" in mode:
+            return "1/2"
+        if "平衡" in mode:
+            return "3/4"
+        if "高清" in mode:
+            return "17/20"
+        return ""
 
     def stop_remote_desktop_service(self):
         port = self.remote_desktop_port_spin.value() if self.remote_desktop_port_spin else 5900
@@ -169,6 +179,8 @@ class RemoteDesktopControllerMixin:
             )
         elif "sudo password is required" in output or "no tty present" in output:
             self._set_remote_desktop_status("安装需要 sudo 密码：点击“终端安装 x11vnc”并在 SSH 工作台输入密码")
+        elif "could not obtain listening port" in output or "is still occupied" in output:
+            self._set_remote_desktop_status("VNC 端口被占用：点击“停止服务”后再启动，或查看日志里的占用进程")
         elif return_code == 127:
             self._set_remote_desktop_status("远程桌面组件缺失，请先安装 x11vnc")
         else:

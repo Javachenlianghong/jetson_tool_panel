@@ -8,7 +8,7 @@ class UiSmokeTest(unittest.TestCase):
     def test_main_window_contains_terminal_and_double_pane_files(self):
         try:
             from PyQt5.QtCore import Qt
-            from PyQt5.QtWidgets import QApplication, QCheckBox, QPushButton
+            from PyQt5.QtWidgets import QApplication, QCheckBox, QComboBox, QPushButton
             from ui.main_window import JetsonControlPanel
         except Exception as exc:  # pragma: no cover - only used when Qt is unavailable.
             self.skipTest(str(exc))
@@ -64,6 +64,14 @@ class UiSmokeTest(unittest.TestCase):
             self.assertIn("终端安装 x11vnc", desktop_button_texts)
             self.assertIn("启动并连接", desktop_button_texts)
             self.assertIn("停止服务", desktop_button_texts)
+            desktop_combo_texts = [
+                combo.itemText(index)
+                for combo in desktop_page.findChildren(QComboBox)
+                for index in range(combo.count())
+            ]
+            self.assertIn("流畅 (50%)", desktop_combo_texts)
+            self.assertIn("高清 (85%)", desktop_combo_texts)
+            self.assertIn("清晰 (100%)", desktop_combo_texts)
             self.assertIsNotNone(window.remote_desktop_view)
             self.assertTrue(hasattr(window, "connect_remote_desktop"))
             self.assertTrue(hasattr(window, "install_remote_desktop_service_in_terminal"))

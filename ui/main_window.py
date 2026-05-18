@@ -207,6 +207,7 @@ class JetsonControlPanel(
         self.remote_desktop_display_edit = None
         self.remote_desktop_xauthority_edit = None
         self.remote_desktop_port_spin = None
+        self.remote_desktop_performance_combo = None
         self.remote_desktop_status_label = None
         self.remote_desktop_view = None
         self.remote_desktop_worker = None
@@ -1456,6 +1457,7 @@ class JetsonControlPanel(
             str(self.settings.value("desktop/xauthority", "/home/jetson/.Xauthority"))
         )
         self.remote_desktop_port_spin.setValue(self._setting_int("desktop/port", 5900))
+        self._set_combo_text(self.remote_desktop_performance_combo, self.settings.value("desktop/performance", "平衡 (75%)"))
         self.terminal_export_display_check.setChecked(
             settings_bool(self.settings.value("terminal/export_display", False), False)
         )
@@ -1526,6 +1528,7 @@ class JetsonControlPanel(
         self.settings.setValue("desktop/display_env", self.remote_desktop_display_edit.text().strip())
         self.settings.setValue("desktop/xauthority", self.remote_desktop_xauthority_edit.text().strip())
         self.settings.setValue("desktop/port", self.remote_desktop_port_spin.value())
+        self.settings.setValue("desktop/performance", self.remote_desktop_performance_combo.currentText().strip())
         self.settings.setValue("terminal/export_display", self.terminal_export_display_check.isChecked())
         self.settings.setValue("display/framebuffer_fallback", self.framebuffer_fallback_check.isChecked())
         self.settings.setValue("health/auto_refresh", self.health_auto_check.isChecked())
