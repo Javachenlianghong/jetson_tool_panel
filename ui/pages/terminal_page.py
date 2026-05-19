@@ -63,6 +63,8 @@ def _build_file_table(minimum_height=120):
 
 
 class TerminalOutput(QPlainTextEdit):
+    CURSOR_WIDTH = 2
+
     def __init__(self, window):
         super().__init__()
         self.window = window
@@ -92,7 +94,7 @@ class TerminalOutput(QPlainTextEdit):
         if not self._cursor_visible or not self.hasFocus():
             return
         cursor_rect = self.cursorRect(self.textCursor())
-        cursor_rect.setWidth(8)
+        cursor_rect.setWidth(self.CURSOR_WIDTH)
         painter = QPainter(self.viewport())
         painter.fillRect(cursor_rect, QColor("#e5e7eb"))
 
@@ -129,10 +131,10 @@ class TerminalOutput(QPlainTextEdit):
             Qt.Key_Enter: "\r",
             Qt.Key_Backspace: "\x7f",
             Qt.Key_Tab: "\t",
-            Qt.Key_Left: "\x1b[D",
-            Qt.Key_Right: "\x1b[C",
-            Qt.Key_Up: "\x1b[A",
-            Qt.Key_Down: "\x1b[B",
+            Qt.Key_Left: self._cursor_key_sequence("D"),
+            Qt.Key_Right: self._cursor_key_sequence("C"),
+            Qt.Key_Up: self._cursor_key_sequence("A"),
+            Qt.Key_Down: self._cursor_key_sequence("B"),
             Qt.Key_Home: "\x1b[H",
             Qt.Key_End: "\x1b[F",
             Qt.Key_Delete: "\x1b[3~",
@@ -157,6 +159,12 @@ class TerminalOutput(QPlainTextEdit):
             return
 
         super().keyPressEvent(event)
+
+    def _cursor_key_sequence(self, final):
+        terminal_buffer = getattr(self.window, "terminal_buffer", None)
+        if getattr(terminal_buffer, "application_cursor_keys", False):
+            return "\x1bO" + final
+        return "\x1b[" + final
 
 
 def _build_session_bar(window):

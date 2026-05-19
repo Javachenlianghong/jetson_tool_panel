@@ -104,6 +104,8 @@ class UiSmokeTest(unittest.TestCase):
         class StubWindow:
             def __init__(self):
                 self.sent = []
+                from core.terminal_filter import PlainTerminalBuffer
+                self.terminal_buffer = PlainTerminalBuffer()
 
             def terminal_send_text(self, text):
                 self.sent.append(text)
@@ -112,9 +114,43 @@ class UiSmokeTest(unittest.TestCase):
         stub = StubWindow()
         terminal = TerminalOutput(stub)
         try:
+            self.assertLessEqual(terminal.CURSOR_WIDTH, 2)
+            terminal.setFocus()
             terminal.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Up, Qt.NoModifier))
             terminal.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Down, Qt.NoModifier))
-            self.assertEqual(stub.sent, ["\x1b[A", "\x1b[B"])
+            terminal.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Left, Qt.NoModifier))
+            terminal.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Right, Qt.NoModifier))
+            self.assertEqual(stub.sent, ["\x1b[A", "\x1b[B", "\x1b[D", "\x1b[C"])
+        finally:
+            terminal.deleteLater()
+            app.processEvents()
+
+    def test_terminal_arrow_keys_use_application_cursor_mode_when_requested(self):
+        try:
+            from PyQt5.QtCore import QEvent, Qt
+            from PyQt5.QtGui import QKeyEvent
+            from PyQt5.QtWidgets import QApplication
+            from core.terminal_filter import PlainTerminalBuffer
+            from ui.pages.terminal_page import TerminalOutput
+        except Exception as exc:  # pragma: no cover - only used when Qt is unavailable.
+            self.skipTest(str(exc))
+
+        class StubWindow:
+            def __init__(self):
+                self.sent = []
+                self.terminal_buffer = PlainTerminalBuffer()
+                self.terminal_buffer.application_cursor_keys = True
+
+            def terminal_send_text(self, text):
+                self.sent.append(text)
+
+        app = QApplication.instance() or QApplication([])
+        stub = StubWindow()
+        terminal = TerminalOutput(stub)
+        try:
+            terminal.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Left, Qt.NoModifier))
+            terminal.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Right, Qt.NoModifier))
+            self.assertEqual(stub.sent, ["\x1bOD", "\x1bOC"])
         finally:
             terminal.deleteLater()
             app.processEvents()

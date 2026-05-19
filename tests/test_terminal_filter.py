@@ -50,6 +50,62 @@ class TerminalFilterTest(unittest.TestCase):
         buffer.feed("[Kprompt new")
         self.assertEqual(buffer.to_text(), "prompt new")
 
+    def test_terminal_buffer_tracks_application_cursor_key_mode(self):
+        buffer = PlainTerminalBuffer()
+        self.assertFalse(buffer.application_cursor_keys)
+
+        buffer.feed("\x1b[?1h")
+        self.assertTrue(buffer.application_cursor_keys)
+
+        buffer.feed("\x1b[?1l")
+        self.assertFalse(buffer.application_cursor_keys)
+
+    def test_terminal_buffer_keeps_application_cursor_mode_across_screen_clear(self):
+        buffer = PlainTerminalBuffer()
+        buffer.feed("\x1b[?1h\x1b[2J")
+
+        self.assertTrue(buffer.application_cursor_keys)
+
+    def test_terminal_buffer_inserts_text_when_remote_enables_insert_mode(self):
+        buffer = PlainTerminalBuffer()
+        buffer.feed("abcd\x1b[2D\x1b[4hX\x1b[4l")
+
+        self.assertEqual(buffer.to_text(), "abXcd")
+        self.assertFalse(buffer.insert_mode)
+
+    def test_terminal_buffer_replaces_text_without_insert_mode(self):
+        buffer = PlainTerminalBuffer()
+        buffer.feed("abcd\x1b[2DX")
+
+        self.assertEqual(buffer.to_text(), "abXd")
+
+    def test_terminal_buffer_handles_insert_character_sequence(self):
+        buffer = PlainTerminalBuffer()
+        buffer.feed("abcd\x1b[2D\x1b[@X")
+
+        self.assertEqual(buffer.to_text(), "abXcd")
+
+    def test_terminal_buffer_backspace_moves_cursor_without_deleting_text(self):
+        buffer = PlainTerminalBuffer()
+        buffer.feed("abcd\b\b")
+
+        self.assertEqual(buffer.to_text(), "abcd")
+        self.assertEqual(buffer.cursor_offset(), 2)
+
+    def test_terminal_buffer_handles_readline_insert_redraw_after_left_key(self):
+        buffer = PlainTerminalBuffer()
+        buffer.feed("abcd\b\bXcd\b\b")
+
+        self.assertEqual(buffer.to_text(), "abXcd")
+        self.assertEqual(buffer.cursor_offset(), 3)
+
+    def test_terminal_buffer_handles_backspace_erase_echo(self):
+        buffer = PlainTerminalBuffer()
+        buffer.feed("abcd\b \b")
+
+        self.assertEqual(buffer.to_text(), "abc ")
+        self.assertEqual(buffer.cursor_offset(), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

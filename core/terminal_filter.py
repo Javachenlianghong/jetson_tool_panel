@@ -24,13 +24,22 @@ class PlainTerminalBuffer:
         self.lines = [""]
         self.row = 0
         self.col = 0
+        self.application_cursor_keys = False
+        self.insert_mode = False
         self._pending_escape = ""
 
     def clear(self):
         self.lines = [""]
         self.row = 0
         self.col = 0
+        self.application_cursor_keys = False
+        self.insert_mode = False
         self._pending_escape = ""
+
+    def _clear_screen(self):
+        self.lines = [""]
+        self.row = 0
+        self.col = 0
 
     def feed(self, text):
         text = self._pending_escape + str(text or "")
@@ -109,6 +118,7 @@ class PlainTerminalBuffer:
         final = sequence[-1]
         body = sequence[2:-1]
         if body.startswith("?"):
+            self._handle_private_mode(body[1:], final)
             return
         params = body.split(";") if body else []
 
@@ -124,7 +134,7 @@ class PlainTerminalBuffer:
         if final == "K":
             self._erase_line(param(0, 0))
         elif final == "J" and param(0, 0) in (2, 3):
-            self.clear()
+            self._clear_screen()
         elif final in ("G", "`"):
             self.col = max(0, param(0, 1) - 1)
         elif final == "C":
@@ -142,18 +152,37 @@ class PlainTerminalBuffer:
             self.row = max(0, param(0, 1) - 1)
             self.col = max(0, param(1, 1) - 1)
             self._ensure_cursor_line()
+        elif final == "@":
+            self._insert_chars(count)
         elif final == "P":
             self._delete_chars(count)
         elif final == "X":
             self._erase_chars(count)
+        elif final in ("h", "l"):
+            self._handle_mode(params, final)
+
+    def _handle_private_mode(self, body, final):
+        if final not in ("h", "l"):
+            return
+        params = body.split(";") if body else []
+        enabled = final == "h"
+        if "1" in params:
+            self.application_cursor_keys = enabled
+
+    def _handle_mode(self, params, final):
+        enabled = final == "h"
+        if "4" in params:
+            self.insert_mode = enabled
 
     def _handle_char(self, char):
         if char == "\r":
             self.col = 0
         elif char == "\n":
             self._new_line()
-        elif char in ("\b", "\x7f"):
-            self._delete_previous_char()
+        elif char == "\b":
+            self.col = max(0, self.col - 1)
+        elif char == "\x7f":
+            return
         elif char == "\x07":
             return
         elif char == "\t":
@@ -174,23 +203,24 @@ class PlainTerminalBuffer:
             line = self._current_line()
             if self.col > len(line):
                 line += " " * (self.col - len(line))
-            if self.col < len(line):
+            if self.insert_mode and self.col < len(line):
+                line = line[:self.col] + char + line[self.col:]
+            elif self.col < len(line):
                 line = line[:self.col] + char + line[self.col + 1:]
             else:
                 line += char
             self.lines[self.row] = line
             self.col += 1
 
-    def _delete_previous_char(self):
-        if self.col <= 0:
-            return
-        line = self._current_line()
-        self.col -= 1
-        self.lines[self.row] = line[:self.col] + line[self.col + 1:]
-
     def _delete_chars(self, count):
         line = self._current_line()
         self.lines[self.row] = line[:self.col] + line[self.col + count:]
+
+    def _insert_chars(self, count):
+        line = self._current_line()
+        if self.col > len(line):
+            line += " " * (self.col - len(line))
+        self.lines[self.row] = line[:self.col] + (" " * count) + line[self.col:]
 
     def _erase_chars(self, count):
         line = self._current_line()
